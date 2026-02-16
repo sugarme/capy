@@ -23,6 +23,14 @@ pub const requestDraw = _events.requestDraw;
 pub const getWidth = _events.getWidth;
 pub const getHeight = _events.getHeight;
 pub const getPreferredSize = _events.getPreferredSize;
+
+pub fn getPreferredSize_impl(self: *const Dropdown) lib.Size {
+    const text = @import("backend.zig").measureWindowText(self.peer);
+    // Dropdown: text height + dropdown arrow width + border
+    const w: f32 = @floatFromInt(@max(text.width + 30, 100));
+    const h: f32 = @floatFromInt(@max(text.height + 8, 23));
+    return lib.Size.init(w, h);
+}
 pub const setOpacity = _events.setOpacity;
 pub const deinit = _events.deinit;
 

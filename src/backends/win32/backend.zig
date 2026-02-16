@@ -653,6 +653,35 @@ pub inline fn getEventUserData(peer: HWND) *EventUserData {
     return @as(*EventUserData, @ptrFromInt(@as(usize, @bitCast(win32Backend.getWindowLongPtr(peer, win32.GWL_USERDATA)))));
 }
 
+/// Measures the text content of a Win32 control using its current font.
+/// Returns the text dimensions in pixels as {width, height}.
+pub fn measureWindowText(peer: HWND) struct { width: i32, height: i32 } {
+    const hdc = win32.GetDC(peer) orelse return .{ .width = 0, .height = 0 };
+    defer _ = win32.ReleaseDC(peer, hdc);
+
+    // Use the font assigned to the control (set via WM_SETFONT), or captionFont as fallback
+    const font_result: usize = @bitCast(win32.SendMessageW(peer, win32.WM_GETFONT, 0, 0));
+    const font: win32.HGDIOBJ = if (font_result != 0)
+        @ptrFromInt(font_result)
+    else
+        @ptrCast(captionFont);
+    _ = win32.SelectObject(hdc, font);
+
+    const text_len = win32.GetWindowTextLengthW(peer);
+    if (text_len <= 0) return .{ .width = 0, .height = 0 };
+
+    var buf: [512]u16 = undefined;
+    const max_len: i32 = @intCast(@min(@as(usize, @intCast(text_len + 1)), buf.len));
+    const actual_len = win32.GetWindowTextW(peer, @ptrCast(&buf), max_len);
+    if (actual_len <= 0) return .{ .width = 0, .height = 0 };
+
+    var size: win32.SIZE = undefined;
+    if (win32.GetTextExtentPoint32W(hdc, @ptrCast(&buf), actual_len, &size) == 0)
+        return .{ .width = 0, .height = 0 };
+
+    return .{ .width = size.cx, .height = size.cy };
+}
+
 pub fn Events(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -1011,8 +1040,9 @@ pub fn Events(comptime T: type) type {
         }
 
         pub fn getPreferredSize(self: *const T) lib.Size {
-            // TODO
-            _ = self;
+            if (@hasDecl(T, "getPreferredSize_impl")) {
+                return self.getPreferredSize_impl();
+            }
             return lib.Size.init(100, 50);
         }
 
@@ -1049,9 +1079,17 @@ pub const Canvas = struct {
         path: std.ArrayList(PathElement),
         render_target: *win32.ID2D1HwndRenderTarget,
         brush: *win32.ID2D1SolidColorBrush,
+        stroke_width: f32 = 1.0,
+        pending_gradient: ?shared.LinearGradient = null,
+        color_r: f32 = 0,
+        color_g: f32 = 0,
+        color_b: f32 = 0,
+        color_a: f32 = 1,
 
         const PathElement = union(enum) {
-            Rectangle: struct { left: c_int, top: c_int, right: c_int, bottom: c_int },
+            rectangle: win32.D2D_RECT_F,
+            ellipse: win32.D2D1_ELLIPSE,
+            rounded_rectangle: win32.D2D1_ROUNDED_RECT,
         };
 
         pub const TextLayout = struct {
@@ -1070,33 +1108,23 @@ pub const Canvas = struct {
             pub const TextSize = struct { width: u32, height: u32 };
 
             pub fn init() TextLayout {
-                // creates an HDC for the current screen, whatever it means given we can have windows on different screens
                 const hdc = win32.CreateCompatibleDC(null);
-
                 const defaultFont = @as(win32.HFONT, @ptrCast(win32.GetStockObject(win32.DEFAULT_GUI_FONT)));
                 _ = win32.SelectObject(hdc, @as(win32.HGDIOBJ, @ptrCast(defaultFont)));
                 return TextLayout{ .font = defaultFont, .hdc = hdc };
             }
 
             pub fn setFont(self: *TextLayout, font: Font) void {
-                // _ = win32.DeleteObject(@ptrCast(win32.HGDIOBJ, self.font)); // delete old font
                 const allocator = lib.internal.allocator;
-                const wideFace = std.unicode.utf8ToUtf16LeAllocZ(allocator, font.face) catch return; // invalid utf8 or not enough memory
+                const wideFace = std.unicode.utf8ToUtf16LeAllocZ(allocator, font.face) catch return;
                 defer allocator.free(wideFace);
-                if (win32.CreateFontW(0, // cWidth
-                    0, // cHeight
-                    0, // cEscapement,
-                    0, // cOrientation,
-                    win32.FW_NORMAL, // cWeight
-                    0, // bItalic
-                    0, // bUnderline
-                    0, // bStrikeOut
-                    0, // iCharSet
-                    win32.FONT_OUTPUT_PRECISION.DEFAULT_PRECIS, // iOutPrecision
-                    win32.CLIP_DEFAULT_PRECIS, // iClipPrecision
-                    win32.FONT_QUALITY.DEFAULT_QUALITY, // iQuality
-                    win32.FONT_PITCH_AND_FAMILY.DONTCARE, // iPitchAndFamily
-                    wideFace // pszFaceName
+                if (win32.CreateFontW(0, 0, 0, 0,
+                    win32.FW_NORMAL, 0, 0, 0, 0,
+                    win32.FONT_OUTPUT_PRECISION.DEFAULT_PRECIS,
+                    win32.CLIP_DEFAULT_PRECIS,
+                    win32.FONT_QUALITY.DEFAULT_QUALITY,
+                    win32.FONT_PITCH_AND_FAMILY.DONTCARE,
+                    wideFace,
                 )) |winFont| {
                     _ = win32.DeleteObject(@as(win32.HGDIOBJ, @ptrCast(self.font)));
                     self.font = winFont;
@@ -1107,10 +1135,9 @@ pub const Canvas = struct {
             pub fn getTextSize(self: *TextLayout, str: []const u8) TextSize {
                 var size: win32.SIZE = undefined;
                 const allocator = lib.internal.allocator;
-                const wide = std.unicode.utf8ToUtf16LeAllocZ(allocator, str) catch return TextSize{ .width = 0, .height = 0 }; // invalid utf8 or not enough memory
+                const wide = std.unicode.utf8ToUtf16LeAllocZ(allocator, str) catch return TextSize{ .width = 0, .height = 0 };
                 defer allocator.free(wide);
                 _ = win32.GetTextExtentPoint32W(self.hdc, wide.ptr, @as(c_int, @intCast(str.len)), &size);
-
                 return TextSize{ .width = @as(u32, @intCast(size.cx)), .height = @as(u32, @intCast(size.cy)) };
             }
 
@@ -1121,79 +1148,193 @@ pub const Canvas = struct {
         };
 
         pub fn setColorRGBA(self: *DrawContextImpl, r: f32, g: f32, b: f32, a: f32) void {
-            const color = lib.Color{
-                .red = @as(u8, @intFromFloat(std.math.clamp(r, 0, 1) * 255)),
-                .green = @as(u8, @intFromFloat(std.math.clamp(g, 0, 1) * 255)),
-                .blue = @as(u8, @intFromFloat(std.math.clamp(b, 0, 1) * 255)),
-                .alpha = @as(u8, @intFromFloat(std.math.clamp(a, 0, 1) * 255)),
-            };
-            const colorref = (@as(u32, color.blue) << 16) |
-                (@as(u32, color.green) << 8) | color.red;
-            _ = colorref;
-            _ = self;
-            // _ = win32.SetDCBrushColor(self.hdc, colorref);
+            self.pending_gradient = null;
+            self.color_r = r;
+            self.color_g = g;
+            self.color_b = b;
+            self.color_a = a;
+            self.brush.SetColor(&win32.D2D_COLOR_F{ .r = r, .g = g, .b = b, .a = a });
+        }
+
+        pub fn setLinearGradient(self: *DrawContextImpl, gradient: shared.LinearGradient) void {
+            self.pending_gradient = gradient;
         }
 
         pub fn rectangle(self: *DrawContextImpl, x: i32, y: i32, w: u32, h: u32) void {
-            _ = h;
-            _ = w;
-            _ = y;
-            _ = x;
-            _ = self;
-            // _ = win32.Rectangle(self.hdc, @intCast(c_int, x), @intCast(c_int, y), x + @intCast(c_int, w), y + @intCast(c_int, h));
+            const fx: f32 = @floatFromInt(x);
+            const fy: f32 = @floatFromInt(y);
+            self.path.append(lib.internal.allocator, .{ .rectangle = .{
+                .left = fx,
+                .top = fy,
+                .right = fx + @as(f32, @floatFromInt(w)),
+                .bottom = fy + @as(f32, @floatFromInt(h)),
+            } }) catch return;
+        }
+
+        pub fn roundedRectangleEx(self: *DrawContextImpl, x: i32, y: i32, w: u32, h: u32, corner_radiuses: [4]f32) void {
+            const fx: f32 = @floatFromInt(x);
+            const fy: f32 = @floatFromInt(y);
+            const fw: f32 = @floatFromInt(w);
+            const fh: f32 = @floatFromInt(h);
+            const max_radius = @min(fw, fh) / 2.0;
+            // D2D rounded rect supports single radiusX/radiusY; average the four corners
+            const rx = @min((corner_radiuses[0] + corner_radiuses[1]) / 2.0, max_radius);
+            const ry = @min((corner_radiuses[2] + corner_radiuses[3]) / 2.0, max_radius);
+            self.path.append(lib.internal.allocator, .{ .rounded_rectangle = .{
+                .rect = .{ .left = fx, .top = fy, .right = fx + fw, .bottom = fy + fh },
+                .radiusX = rx,
+                .radiusY = ry,
+            } }) catch return;
         }
 
         pub fn ellipse(self: *DrawContextImpl, x: i32, y: i32, w: u32, h: u32) void {
-            _ = y;
-            _ = x;
-            _ = self;
-            const cw = @as(c_int, @intCast(w));
-            _ = cw;
-            const ch = @as(c_int, @intCast(h));
-            _ = ch;
-
-            // _ = win32.Ellipse(self.hdc, @intCast(c_int, x), @intCast(c_int, y), @intCast(c_int, x) + cw, @intCast(c_int, y) + ch);
+            const fx: f32 = @floatFromInt(x);
+            const fy: f32 = @floatFromInt(y);
+            const fw: f32 = @floatFromInt(w);
+            const fh: f32 = @floatFromInt(h);
+            self.path.append(lib.internal.allocator, .{ .ellipse = .{
+                .point = .{ .x = fx + fw / 2.0, .y = fy + fh / 2.0 },
+                .radiusX = fw / 2.0,
+                .radiusY = fh / 2.0,
+            } }) catch return;
         }
 
         pub fn text(self: *DrawContextImpl, x: i32, y: i32, layout: TextLayout, str: []const u8) void {
-            _ = str;
-            _ = layout;
-            _ = y;
-            _ = x;
-            _ = self;
-            // select current color
-            // const color = win32.GetDCBrushColor(self.hdc);
-            // _ = win32.SetTextColor(self.hdc, color);
-
-            // select the font
-            // win32.SelectObject(self.hdc, @ptrCast(win32.HGDIOBJ, layout.font));
-
-            // and draw
-            // _ = win32.ExtTextOutA(self.hdc, @intCast(c_int, x), @intCast(c_int, y), 0, null, str.ptr, @intCast(std.os.windows.UINT, str.len), null);
+            if (str.len == 0) return;
+            const allocator = lib.internal.allocator;
+            const wide = std.unicode.utf8ToUtf16LeAllocZ(allocator, str) catch return;
+            defer allocator.free(wide);
+            // Use GDI interop via COM QueryInterface to draw text with the layout's GDI font
+            var gdi_rt: ?*win32.ID2D1GdiInteropRenderTarget = null;
+            if (self.render_target.IUnknown.QueryInterface(
+                win32.IID_ID2D1GdiInteropRenderTarget,
+                @ptrCast(&gdi_rt),
+            ) == 0) {
+                defer _ = gdi_rt.?.IUnknown.Release();
+                var hdc: ?win32.HDC = null;
+                if (gdi_rt.?.GetDC(win32.D2D1_DC_INITIALIZE_MODE.COPY, &hdc) == 0) {
+                    defer _ = gdi_rt.?.ReleaseDC(null);
+                    if (hdc) |dc| {
+                        _ = win32.SelectObject(dc, @as(win32.HGDIOBJ, @ptrCast(layout.font)));
+                        _ = win32.SetBkMode(dc, win32.TRANSPARENT);
+                        const colorref = (@as(u32, @intFromFloat(std.math.clamp(self.color_b, 0, 1) * 255)) << 16) |
+                            (@as(u32, @intFromFloat(std.math.clamp(self.color_g, 0, 1) * 255)) << 8) |
+                            @as(u32, @intFromFloat(std.math.clamp(self.color_r, 0, 1) * 255));
+                        _ = win32.SetTextColor(dc, colorref);
+                        _ = win32.ExtTextOutW(dc, x, y, .{}, null, wide.ptr, @intCast(wide.len), null);
+                    }
+                }
+            }
         }
 
         pub fn line(self: *DrawContextImpl, x1: i32, y1: i32, x2: i32, y2: i32) void {
-            _ = y2;
-            _ = x2;
-            _ = y1;
-            _ = x1;
+            const rt = self.render_target.ID2D1RenderTarget;
+            rt.DrawLine(
+                .{ .x = @floatFromInt(x1), .y = @floatFromInt(y1) },
+                .{ .x = @floatFromInt(x2), .y = @floatFromInt(y2) },
+                @ptrCast(self.brush),
+                self.stroke_width,
+                null,
+            );
+        }
+
+        pub fn image(self: *DrawContextImpl, x: i32, y: i32, w: u32, h: u32, data: lib.ImageData) void {
+            // ImageData.peer is void on win32 — no-op for now
             _ = self;
-            // _ = win32.MoveToEx(self.hdc, @intCast(c_int, x1), @intCast(c_int, y1), null);
-            // _ = win32.LineTo(self.hdc, @intCast(c_int, x2), @intCast(c_int, y2));
+            _ = x;
+            _ = y;
+            _ = w;
+            _ = h;
+            _ = data;
+        }
+
+        pub fn clear(self: *DrawContextImpl, x: u32, y: u32, w: u32, h: u32) void {
+            const rt = self.render_target.ID2D1RenderTarget;
+            // Save current brush color, fill region with white, restore
+            const prev = win32.D2D_COLOR_F{ .r = self.color_r, .g = self.color_g, .b = self.color_b, .a = self.color_a };
+            self.brush.SetColor(&win32.D2D_COLOR_F{ .r = 1, .g = 1, .b = 1, .a = 1 });
+            const rect = win32.D2D_RECT_F{
+                .left = @floatFromInt(x),
+                .top = @floatFromInt(y),
+                .right = @as(f32, @floatFromInt(x)) + @as(f32, @floatFromInt(w)),
+                .bottom = @as(f32, @floatFromInt(y)) + @as(f32, @floatFromInt(h)),
+            };
+            rt.FillRectangle(&rect, @ptrCast(self.brush));
+            self.brush.SetColor(&prev);
+        }
+
+        pub fn setStrokeWidth(self: *DrawContextImpl, width: f32) void {
+            self.stroke_width = width;
         }
 
         pub fn fill(self: *DrawContextImpl) void {
+            const rt = self.render_target.ID2D1RenderTarget;
+
+            if (self.pending_gradient) |gradient| {
+                // Build gradient stops
+                const max_stops = 16;
+                var stops: [max_stops]win32.D2D1_GRADIENT_STOP = undefined;
+                const count: u32 = @intCast(@min(gradient.stops.len, max_stops));
+                for (0..count) |i| {
+                    const stop = gradient.stops[i];
+                    stops[i] = .{
+                        .position = stop.offset,
+                        .color = .{
+                            .r = @as(f32, @floatFromInt(stop.color.red)) / 255.0,
+                            .g = @as(f32, @floatFromInt(stop.color.green)) / 255.0,
+                            .b = @as(f32, @floatFromInt(stop.color.blue)) / 255.0,
+                            .a = @as(f32, @floatFromInt(stop.color.alpha)) / 255.0,
+                        },
+                    };
+                }
+
+                var stop_collection: *win32.ID2D1GradientStopCollection = undefined;
+                if (rt.CreateGradientStopCollection(&stops, count, win32.D2D1_GAMMA.@"2_2", win32.D2D1_EXTEND_MODE.CLAMP, &stop_collection) == 0) {
+                    defer _ = stop_collection.IUnknown.Release();
+
+                    var grad_brush: *win32.ID2D1LinearGradientBrush = undefined;
+                    if (rt.CreateLinearGradientBrush(
+                        &.{
+                            .startPoint = .{ .x = gradient.x0, .y = gradient.y0 },
+                            .endPoint = .{ .x = gradient.x1, .y = gradient.y1 },
+                        },
+                        null,
+                        stop_collection,
+                        &grad_brush,
+                    ) == 0) {
+                        defer _ = grad_brush.IUnknown.Release();
+                        for (self.path.items) |element| {
+                            switch (element) {
+                                .rectangle => |rect| rt.FillRectangle(&rect, @ptrCast(grad_brush)),
+                                .ellipse => |ell| rt.FillEllipse(&ell, @ptrCast(grad_brush)),
+                                .rounded_rectangle => |rr| rt.FillRoundedRectangle(&rr, @ptrCast(grad_brush)),
+                            }
+                        }
+                    }
+                }
+                self.pending_gradient = null;
+            } else {
+                for (self.path.items) |element| {
+                    switch (element) {
+                        .rectangle => |rect| rt.FillRectangle(&rect, @ptrCast(self.brush)),
+                        .ellipse => |ell| rt.FillEllipse(&ell, @ptrCast(self.brush)),
+                        .rounded_rectangle => |rr| rt.FillRoundedRectangle(&rr, @ptrCast(self.brush)),
+                    }
+                }
+            }
             self.path.clearRetainingCapacity();
         }
 
         pub fn stroke(self: *DrawContextImpl) void {
+            const rt = self.render_target.ID2D1RenderTarget;
+            for (self.path.items) |element| {
+                switch (element) {
+                    .rectangle => |rect| rt.DrawRectangle(&rect, @ptrCast(self.brush), self.stroke_width, null),
+                    .ellipse => |ell| rt.DrawEllipse(&ell, @ptrCast(self.brush), self.stroke_width, null),
+                    .rounded_rectangle => |rr| rt.DrawRoundedRectangle(&rr, @ptrCast(self.brush), self.stroke_width, null),
+                }
+            }
             self.path.clearRetainingCapacity();
-        }
-
-        pub fn setStrokeWidth(self: *DrawContextImpl, width: f32) void {
-            _ = self;
-            _ = width;
-            // TODO: implement stroke width for GDI/GDI+ backend
         }
     };
 
@@ -1258,6 +1399,15 @@ pub const TextField = struct {
     pub const getPreferredSize = _events.getPreferredSize;
     pub const setOpacity = _events.setOpacity;
     pub const deinit = _events.deinit;
+
+    pub fn getPreferredSize_impl(self: *const TextField) lib.Size {
+        const text = measureWindowText(self.peer);
+        // TextField has no intrinsic width; use text width or default 150
+        const w: f32 = @floatFromInt(@max(text.width + 8, 150));
+        // Height based on font + border padding
+        const h: f32 = @floatFromInt(@max(text.height + 8, 23));
+        return lib.Size.init(w, h);
+    }
 
     pub fn create() !TextField {
         const hwnd = win32.CreateWindowExW(win32.WS_EX_LEFT, // dwExtStyle
@@ -1330,6 +1480,14 @@ pub const TextArea = struct {
     pub const getPreferredSize = _events.getPreferredSize;
     pub const setOpacity = _events.setOpacity;
     pub const deinit = _events.deinit;
+
+    pub fn getPreferredSize_impl(self: *const TextArea) lib.Size {
+        const text = measureWindowText(self.peer);
+        // Multi-line text area: reasonable default size
+        const w: f32 = @floatFromInt(@max(text.width + 8, 200));
+        const h: f32 = @floatFromInt(@max(text.height + 8, 100));
+        return lib.Size.init(w, h);
+    }
 
     pub fn create() !TextArea {
         const hwnd = win32.CreateWindowExW(win32.WS_EX_LEFT, // dwExtStyle
@@ -1407,6 +1565,14 @@ pub const Button = struct {
     pub const setOpacity = _events.setOpacity;
     pub const deinit = _events.deinit;
 
+    pub fn getPreferredSize_impl(self: *const Button) lib.Size {
+        const text = measureWindowText(self.peer);
+        // Button chrome: ~16px horizontal padding, ~10px vertical
+        const w: f32 = @floatFromInt(@max(text.width + 16, 75));
+        const h: f32 = @floatFromInt(@max(text.height + 10, 23));
+        return lib.Size.init(w, h);
+    }
+
     pub fn create() !Button {
         const hwnd = win32.CreateWindowExW(win32.WS_EX_LEFT, // dwExtStyle
             L("BUTTON"), // lpClassName
@@ -1475,6 +1641,15 @@ pub const CheckBox = struct {
     pub const setOpacity = _events.setOpacity;
     pub const deinit = _events.deinit;
 
+    pub fn getPreferredSize_impl(self: *const CheckBox) lib.Size {
+        const text = measureWindowText(self.peer);
+        // Checkbox indicator (~20px) + gap + text + padding
+        const indicator = win32.GetSystemMetrics(win32.SM_CXMENUCHECK);
+        const w: f32 = @floatFromInt(@max(text.width + indicator + 8, 40));
+        const h: f32 = @floatFromInt(@max(text.height + 4, 20));
+        return lib.Size.init(w, h);
+    }
+
     pub fn create() !CheckBox {
         const hwnd = win32.CreateWindowExW(win32.WS_EX_LEFT, // dwExtStyle
             L("BUTTON"), // lpClassName
@@ -1539,6 +1714,14 @@ pub const RadioButton = struct {
     pub const getPreferredSize = _events.getPreferredSize;
     pub const setOpacity = _events.setOpacity;
     pub const deinit = _events.deinit;
+
+    pub fn getPreferredSize_impl(self: *const RadioButton) lib.Size {
+        const text = measureWindowText(self.peer);
+        const indicator = win32.GetSystemMetrics(win32.SM_CXMENUCHECK);
+        const w: f32 = @floatFromInt(@max(text.width + indicator + 8, 40));
+        const h: f32 = @floatFromInt(@max(text.height + 4, 20));
+        return lib.Size.init(w, h);
+    }
 
     pub fn create() !RadioButton {
         const hwnd = win32.CreateWindowExW(win32.WS_EX_LEFT,
@@ -1609,6 +1792,11 @@ pub const Slider = struct {
     pub const getPreferredSize = _events.getPreferredSize;
     pub const setOpacity = _events.setOpacity;
     pub const deinit = _events.deinit;
+
+    pub fn getPreferredSize_impl(self: *const Slider) lib.Size {
+        _ = self;
+        return lib.Size.init(200, 25);
+    }
 
     pub fn create() !Slider {
         const hwnd = win32.CreateWindowExW(win32.WS_EX_LEFT, // dwExtStyle
@@ -1703,6 +1891,13 @@ pub const Label = struct {
     pub const getPreferredSize = _events.getPreferredSize;
     pub const setOpacity = _events.setOpacity;
     pub const deinit = _events.deinit;
+
+    pub fn getPreferredSize_impl(self: *const Label) lib.Size {
+        const text = measureWindowText(self.peer);
+        const w: f32 = @floatFromInt(@max(text.width + 4, 20));
+        const h: f32 = @floatFromInt(@max(text.height + 2, 16));
+        return lib.Size.init(w, h);
+    }
 
     pub fn create() !Label {
         const hwnd = win32.CreateWindowExW(win32.WS_EX_LEFT, // dwExtStyle
@@ -2016,16 +2211,20 @@ pub const ScrollView = struct {
         const width = parent.right - parent.left;
         const height = parent.bottom - parent.top;
 
-        // Resize the child component to its preferred size (while keeping its current position)
+        // Resize the child to at least the visible area, or its preferred size if larger.
+        // This matches NSScrollView/GtkScrolledWindow behavior: the child should never
+        // be narrower/shorter than the scroll view's visible area.
         const preferred = self.widget.?.getPreferredSize(lib.Size.init(std.math.floatMax(f32), std.math.floatMax(f32)));
+        const child_width: c_int = @intFromFloat(@max(preferred.width, @as(f32, @floatFromInt(width))));
+        const child_height: c_int = @intFromFloat(@max(preferred.height, @as(f32, @floatFromInt(height))));
 
         const child = win32.GetWindow(hwnd, win32.GW_CHILD);
         _ = win32.MoveWindow(
             child,
-            @max(rect.left - parent.left, @min(0, -(@as(c_int, @intFromFloat(preferred.width)) - width))),
-            @max(rect.top - parent.top, @min(0, -(@as(c_int, @intFromFloat(preferred.height)) - height))),
-            @as(c_int, @intFromFloat(preferred.width)),
-            @as(c_int, @intFromFloat(preferred.height)),
+            @max(rect.left - parent.left, @min(0, -(child_width - width))),
+            @max(rect.top - parent.top, @min(0, -(child_height - height))),
+            child_width,
+            child_height,
             1,
         );
 
@@ -2034,7 +2233,7 @@ pub const ScrollView = struct {
             .cbSize = @sizeOf(win32.SCROLLINFO),
             .fMask = .{ .RANGE = 1, .PAGE = 1 },
             .nMin = 0,
-            .nMax = @as(c_int, @intFromFloat(preferred.width)),
+            .nMax = child_width,
             .nPage = @as(c_uint, @intCast(width)),
             .nPos = 0,
             .nTrackPos = 0,
@@ -2045,7 +2244,7 @@ pub const ScrollView = struct {
             .cbSize = @sizeOf(win32.SCROLLINFO),
             .fMask = .{ .RANGE = 1, .PAGE = 1 },
             .nMin = 0,
-            .nMax = @as(c_int, @intFromFloat(preferred.height)),
+            .nMax = child_height,
             .nPage = @as(c_uint, @intCast(height)),
             .nPos = 0,
             .nTrackPos = 0,

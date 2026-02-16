@@ -22,6 +22,11 @@ pub const requestDraw = _events.requestDraw;
 pub const getWidth = _events.getWidth;
 pub const getHeight = _events.getHeight;
 pub const getPreferredSize = _events.getPreferredSize;
+
+pub fn getPreferredSize_impl(self: *const ProgressBar) lib.Size {
+    _ = self;
+    return lib.Size.init(200, 20);
+}
 pub const setOpacity = _events.setOpacity;
 pub const deinit = _events.deinit;
 

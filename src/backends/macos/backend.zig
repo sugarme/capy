@@ -907,10 +907,15 @@ pub fn Events(comptime T: type) type {
             if (@hasDecl(T, "getPreferredSize_impl")) {
                 return self.getPreferredSize_impl();
             }
-            return lib.Size.init(
-                100,
-                100,
-            );
+            // Try NSView's intrinsicContentSize (returns -1 for no intrinsic size)
+            const size = self.peer.object.msgSend(AppKit.CGSize, "intrinsicContentSize", .{});
+            if (size.width >= 0 and size.height >= 0) {
+                return lib.Size.init(
+                    @max(@as(f32, @floatCast(size.width)), 20),
+                    @max(@as(f32, @floatCast(size.height)), 16),
+                );
+            }
+            return lib.Size.init(100, 100);
         }
 
         pub fn requestDraw(self: *T) !void {

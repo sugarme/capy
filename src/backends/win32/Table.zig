@@ -25,6 +25,11 @@ pub const requestDraw = _events.requestDraw;
 pub const getWidth = _events.getWidth;
 pub const getHeight = _events.getHeight;
 pub const getPreferredSize = _events.getPreferredSize;
+
+pub fn getPreferredSize_impl(self: *const Table) lib.Size {
+    _ = self;
+    return lib.Size.init(400, 300);
+}
 pub const setOpacity = _events.setOpacity;
 pub const deinit = _events.deinit;
 
