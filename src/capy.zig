@@ -248,6 +248,7 @@ pub fn deinit() void {
     Monitors.deinit();
 
     @import("timer.zig").runningTimers.deinit();
+    audio.deinit();
 
     eventStep.deinitAllListeners();
     if (ENABLE_DEV_TOOLS) {

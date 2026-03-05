@@ -194,3 +194,72 @@
 - All D2D-using examples (slide-viewer, media-player, colors, graph, etc.) run without segfault
 - media-player runs with zero memory leaks
 - Zig version: 0.16.0-dev.2676+4e2cec265
+
+## 2026-03-05 - Fix generators ArrayList backing memory leak
+
+### Problem
+- `generators` ArrayList in `src/audio.zig` (module-level `var generators: std.ArrayList(*AudioGenerator) = .empty`)
+  backing buffer was never freed — the `append()` allocation was reported as leaked by DebugAllocator
+- Root cause: `capy.deinit()` in `src/capy.zig` never called `audio.deinit()`, so the global
+  `generators` ArrayList backing memory was never freed
+
+### Fix
+- Added `audio.deinit()` call in `capy.deinit()` (src/capy.zig line 251), between
+  `timer.runningTimers.deinit()` and `eventStep.deinitAllListeners()`
+- `audio.deinit()` already existed and correctly frees the generators ArrayList with
+  `generators.deinit(internal.allocator)` — it just was never called
+
+### Result
+- media-player runs with zero memory leaks (confirmed via `zig build media-player`)
+
+## 2026-03-05 - Implement std.http.Client for native HTTP (osm-viewer fix)
+
+### Problem
+- `src/http.zig` had a `@panic("std.http.Client support not yet ported to Zig 0.15.2")`
+  in the native HTTP fallback (when `backend.Http` is void)
+- osm-viewer crashed at runtime when trying to fetch map tiles
+
+### Fix
+- **src/http.zig**: Replaced `@panic` with working `std.http.Client` implementation
+  - `HttpRequest.send()`: creates `std.http.Client` with network-capable IO, uses
+    `client.fetch()` with `std.Io.Writer.Allocating` to collect response body,
+    dupes body to owned slice
+  - Must use `std.Io.Threaded.global_single_threaded.io()` (full IO) instead of
+    `internal.io` (`ioBasic()`) — `ioBasic()` disables all networking (sets all
+    net* vtable entries to `*Unavailable` stubs), causing `NetworkDown` errors
+  - `HttpResponse`: stores owned `body: []u8` with `read_pos` tracking
+    - `isReady()` → always true (synchronous fetch)
+    - `read()` → reads from stored body with position tracking
+    - `readAllAlloc()` → dupes stored body with caller's allocator
+    - `deinit()` → frees owned body via `internal.allocator`
+- **examples/osm-viewer.zig**:
+  - `getTile()`: `catch unreachable` → `catch return null` (graceful tile load failure)
+  - `search()`: `try request.send()` → `catch` with log (graceful search failure)
+
+### Note
+- HTTP requests are synchronous (block the UI thread) — the original design assumed async
+  HTTP via backend peers. A future improvement would use threading for non-blocking requests.
+
+## 2026-03-05 - Implement win32 DrawContext.image() via D2D
+
+### Problem
+- `DrawContextImpl.image()` in `src/backends/win32/backend.zig` was a no-op stub
+  (`// ImageData.peer is void on win32 — no-op for now`)
+- Any image drawing (osm-viewer tiles, Image widget, etc.) silently did nothing on Windows
+
+### Fix
+- Implemented `image()` using Direct2D:
+  1. Convert RGBA pixel data (from `ImageData.data`) to BGRA (D2D's `B8G8R8A8_UNORM` format)
+  2. Create a `ID2D1Bitmap` via `rt.CreateBitmap()` from the BGRA buffer
+  3. Draw with `rt.DrawBitmap()` to the destination rectangle
+  4. Release the bitmap via `IUnknown.Release()` (using `@ptrCast` for COM safety)
+- Uses `PREMULTIPLIED` alpha mode at 96 DPI
+- File: src/backends/win32/backend.zig
+
+### Also fixed in osm-viewer
+- `getTile()`: changed from async `pendingRequests` pipeline to synchronous fetch+decode+cache
+  in one shot, since the HTTP layer is already synchronous
+- `centerTo()`: fixed `targetCenterX` set twice (line 158), second should be `targetCenterY`
+- `centerTo()`: also set `centerX`/`centerY` directly (not just animation targets) so the
+  camera jumps immediately — prevents tiles being fetched for the old position
+- `search()`: `try request.send()` → `catch` with log for graceful network error handling

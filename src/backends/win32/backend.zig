@@ -1262,13 +1262,52 @@ pub const Canvas = struct {
         }
 
         pub fn image(self: *DrawContextImpl, x: i32, y: i32, w: u32, h: u32, data: lib.ImageData) void {
-            // ImageData.peer is void on win32 — no-op for now
-            _ = self;
-            _ = x;
-            _ = y;
-            _ = w;
-            _ = h;
-            _ = data;
+            const rt: *win32.ID2D1RenderTarget = @ptrCast(self.render_target);
+
+            // Convert RGBA to BGRA for D2D (swap R and B channels)
+            const byte_len = data.stride * data.height;
+            const bgra = lib.internal.allocator.alloc(u8, byte_len) catch return;
+            defer lib.internal.allocator.free(bgra);
+
+            var i: usize = 0;
+            while (i + 3 < byte_len) : (i += 4) {
+                bgra[i + 0] = data.data[i + 2]; // B
+                bgra[i + 1] = data.data[i + 1]; // G
+                bgra[i + 2] = data.data[i + 0]; // R
+                bgra[i + 3] = data.data[i + 3]; // A
+            }
+
+            const bitmap_props = win32.D2D1_BITMAP_PROPERTIES{
+                .pixelFormat = .{
+                    .format = win32.DXGI_FORMAT_B8G8R8A8_UNORM,
+                    .alphaMode = .PREMULTIPLIED,
+                },
+                .dpiX = 96.0,
+                .dpiY = 96.0,
+            };
+
+            var bitmap: *win32.ID2D1Bitmap = undefined;
+            const hr = rt.CreateBitmap(
+                .{ .width = data.width, .height = data.height },
+                bgra.ptr,
+                data.stride,
+                &bitmap_props,
+                &bitmap,
+            );
+            if (hr != 0) return;
+            defer {
+                const unk: *win32.IUnknown = @ptrCast(bitmap);
+                _ = unk.Release();
+            }
+
+            const dest = win32.D2D_RECT_F{
+                .left = @floatFromInt(x),
+                .top = @floatFromInt(y),
+                .right = @as(f32, @floatFromInt(x)) + @as(f32, @floatFromInt(w)),
+                .bottom = @as(f32, @floatFromInt(y)) + @as(f32, @floatFromInt(h)),
+            };
+
+            rt.DrawBitmap(bitmap, &dest, 1.0, .LINEAR, null);
         }
 
         pub fn clear(self: *DrawContextImpl, x: u32, y: u32, w: u32, h: u32) void {

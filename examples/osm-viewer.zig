@@ -133,16 +133,20 @@ pub const MapViewer = struct {
         };
         if (self.tileCache.get(actual_pos)) |tile| {
             return tile;
-        } else {
-            if (self.pendingRequests.get(actual_pos) == null) {
-                var buf: [2048]u8 = undefined;
-                const url = std.fmt.bufPrint(&buf, "https://tile.openstreetmap.org/{}/{}/{}.png", .{ actual_pos.zoom, actual_pos.x, actual_pos.y }) catch unreachable;
-                const request = capy.http.HttpRequest.get(url);
-                const response = request.send() catch unreachable;
-                self.pendingRequests.put(actual_pos, response) catch unreachable;
-            }
-            return null;
         }
+        // Fetch, decode, and cache the tile synchronously
+        var buf: [2048]u8 = undefined;
+        const url = std.fmt.bufPrint(&buf, "https://tile.openstreetmap.org/{}/{}/{}.png", .{ actual_pos.zoom, actual_pos.x, actual_pos.y }) catch return null;
+        const request = capy.http.HttpRequest.get(url);
+        var response = request.send() catch return null;
+        defer response.deinit();
+
+        const contents = response.readAllAlloc(capy.internal.allocator, std.math.maxInt(usize)) catch return null;
+        defer capy.internal.allocator.free(contents);
+
+        const imageData = capy.ImageData.fromBuffer(capy.internal.allocator, contents) catch return null;
+        self.tileCache.put(actual_pos, .{ .data = imageData }) catch return null;
+        return self.tileCache.get(actual_pos);
     }
 
     pub fn centerTo(self: *MapViewer, lon: f32, lat: f32) void {
@@ -150,8 +154,10 @@ pub const MapViewer = struct {
         const x = n * ((lon + 180) / 360);
         const lat_rad = deg2rad(lat);
         const y = n * (1 - (std.math.log(f32, std.math.e, std.math.tan(lat_rad) + (1.0 / std.math.cos(lat_rad))) / std.math.pi)) / 2;
+        self.centerX.set(x * 256);
+        self.centerY.set(y * 256);
         self.targetCenterX.set(x * 256);
-        self.targetCenterX.set(y * 256);
+        self.targetCenterY.set(y * 256);
     }
 
     pub fn search(self: *MapViewer, query: []const u8) !void {
@@ -161,7 +167,10 @@ pub const MapViewer = struct {
         const url = try std.fmt.bufPrint(&buf2, "https://nominatim.openstreetmap.org/search?q={s}&format=jsonv2", .{encoded_query});
 
         const request = capy.http.HttpRequest.get(url);
-        const response = try request.send();
+        const response = request.send() catch |err| {
+            std.log.err("search request failed: {}", .{err});
+            return;
+        };
         self.pendingSearchRequest = response;
     }
 
