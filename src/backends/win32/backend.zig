@@ -524,9 +524,9 @@ pub const Window = struct {
             const hmonitor = if (monitor) |mon| mon.getHmonitor() else win32.MonitorFromWindow(self.hwnd, win32.MONITOR_DEFAULTTONEAREST);
 
             const style = win32Backend.getWindowLongPtr(self.hwnd, win32.GWL_STYLE);
-            _ = win32Backend.setWindowLongPtr(self.hwnd, win32.GWL_STYLE, style & ~(@intFromEnum(win32.WS_CAPTION) | @intFromEnum(win32.WS_THICKFRAME)));
+            _ = win32Backend.setWindowLongPtr(self.hwnd, win32.GWL_STYLE, style & ~(@as(u32, @bitCast(win32.WS_CAPTION)) | @as(u32, @bitCast(win32.WS_THICKFRAME))));
             const ex_style = win32Backend.getWindowLongPtr(self.hwnd, win32.GWL_EXSTYLE);
-            _ = win32Backend.setWindowLongPtr(self.hwnd, win32.GWL_EXSTYLE, ex_style & ~(@intFromEnum(win32.WS_EX_DLGMODALFRAME) | @intFromEnum(win32.WS_EX_WINDOWEDGE) | @intFromEnum(win32.WS_EX_CLIENTEDGE) | @intFromEnum(win32.WS_EX_STATICEDGE)));
+            _ = win32Backend.setWindowLongPtr(self.hwnd, win32.GWL_EXSTYLE, ex_style & ~(@as(u32, @bitCast(win32.WS_EX_DLGMODALFRAME)) | @as(u32, @bitCast(win32.WS_EX_WINDOWEDGE)) | @as(u32, @bitCast(win32.WS_EX_CLIENTEDGE)) | @as(u32, @bitCast(win32.WS_EX_STATICEDGE))));
 
             var monitor_info = std.mem.zeroInit(win32.MONITORINFO, .{ .cbSize = @sizeOf(win32.MONITORINFO) });
             std.debug.assert(win32.GetMonitorInfoW(hmonitor, &monitor_info) != 0);
@@ -548,9 +548,9 @@ pub const Window = struct {
         if (self.in_fullscreen) {
             _ = win32.ChangeDisplaySettingsW(null, win32.CDS_RESET);
             const style = win32Backend.getWindowLongPtr(self.hwnd, win32.GWL_STYLE);
-            _ = win32Backend.setWindowLongPtr(self.hwnd, win32.GWL_STYLE, style | (@intFromEnum(win32.WS_CAPTION) | @intFromEnum(win32.WS_THICKFRAME)));
+            _ = win32Backend.setWindowLongPtr(self.hwnd, win32.GWL_STYLE, style | (@as(u32, @bitCast(win32.WS_CAPTION)) | @as(u32, @bitCast(win32.WS_THICKFRAME))));
             const ex_style = win32Backend.getWindowLongPtr(self.hwnd, win32.GWL_EXSTYLE);
-            _ = win32Backend.setWindowLongPtr(self.hwnd, win32.GWL_EXSTYLE, ex_style | (@intFromEnum(win32.WS_EX_DLGMODALFRAME) | @intFromEnum(win32.WS_EX_WINDOWEDGE) | @intFromEnum(win32.WS_EX_CLIENTEDGE) | @intFromEnum(win32.WS_EX_STATICEDGE)));
+            _ = win32Backend.setWindowLongPtr(self.hwnd, win32.GWL_EXSTYLE, ex_style | (@as(u32, @bitCast(win32.WS_EX_DLGMODALFRAME)) | @as(u32, @bitCast(win32.WS_EX_WINDOWEDGE)) | @as(u32, @bitCast(win32.WS_EX_CLIENTEDGE)) | @as(u32, @bitCast(win32.WS_EX_STATICEDGE))));
             _ = win32.SetWindowPlacement(self.hwnd, &self.restore_placement);
             _ = win32.SetWindowPos(self.hwnd, null, 0, 0, 0, 0, win32.SET_WINDOW_POS_FLAGS{
                 .NOMOVE = 1,
@@ -934,11 +934,15 @@ pub fn Events(comptime T: type) type {
                         },
                         &render_target,
                     );
-                    std.debug.assert(hresult == 0);
+                    if (hresult != 0) {
+                        log.err("CreateHwndRenderTarget failed HRESULT=0x{x}", .{@as(u32, @bitCast(hresult))});
+                        break :blk;
+                    }
                     // defer win32.SafeRelease(render_target);
 
+                    const rt_base: *win32.ID2D1RenderTarget = @ptrCast(render_target);
                     var default_brush: *win32.ID2D1SolidColorBrush = undefined;
-                    std.debug.assert(render_target.ID2D1RenderTarget.CreateSolidColorBrush(
+                    std.debug.assert(rt_base.CreateSolidColorBrush(
                         &win32.D2D_COLOR_F{ .r = 0, .g = 0, .b = 0, .a = 1 },
                         null,
                         &default_brush,
@@ -952,9 +956,9 @@ pub fn Events(comptime T: type) type {
                     var dc = @import("../../backend.zig").DrawContext{ .impl = dci };
                     defer dc.impl.path.deinit(lib.internal.allocator);
 
-                    render_target.ID2D1RenderTarget.BeginDraw();
-                    render_target.ID2D1RenderTarget.Clear(&win32.D2D_COLOR_F{ .r = 1, .g = 1, .b = 1, .a = 0 });
-                    defer _ = render_target.ID2D1RenderTarget.EndDraw(null, null);
+                    rt_base.BeginDraw();
+                    rt_base.Clear(&win32.D2D_COLOR_F{ .r = 1, .g = 1, .b = 1, .a = 0 });
+                    defer _ = rt_base.EndDraw(null, null);
                     if (data.class.drawHandler) |handler|
                         handler(&dc, data.userdata);
                     if (data.user.drawHandler) |handler|
@@ -1206,7 +1210,8 @@ pub const Canvas = struct {
             defer allocator.free(wide);
             // Use GDI interop via COM QueryInterface to draw text with the layout's GDI font
             var gdi_rt: ?*win32.ID2D1GdiInteropRenderTarget = null;
-            if (self.render_target.IUnknown.QueryInterface(
+            const rt_iunknown: *win32.IUnknown = @ptrCast(self.render_target);
+            if (rt_iunknown.QueryInterface(
                 win32.IID_ID2D1GdiInteropRenderTarget,
                 @ptrCast(&gdi_rt),
             ) == 0) {
@@ -1228,7 +1233,7 @@ pub const Canvas = struct {
         }
 
         pub fn line(self: *DrawContextImpl, x1: i32, y1: i32, x2: i32, y2: i32) void {
-            const rt = self.render_target.ID2D1RenderTarget;
+            const rt: *win32.ID2D1RenderTarget = @ptrCast(self.render_target);
             rt.DrawLine(
                 .{ .x = @floatFromInt(x1), .y = @floatFromInt(y1) },
                 .{ .x = @floatFromInt(x2), .y = @floatFromInt(y2) },
@@ -1249,7 +1254,7 @@ pub const Canvas = struct {
         }
 
         pub fn clear(self: *DrawContextImpl, x: u32, y: u32, w: u32, h: u32) void {
-            const rt = self.render_target.ID2D1RenderTarget;
+            const rt: *win32.ID2D1RenderTarget = @ptrCast(self.render_target);
             // Save current brush color, fill region with white, restore
             const prev = win32.D2D_COLOR_F{ .r = self.color_r, .g = self.color_g, .b = self.color_b, .a = self.color_a };
             self.brush.SetColor(&win32.D2D_COLOR_F{ .r = 1, .g = 1, .b = 1, .a = 1 });
@@ -1268,7 +1273,7 @@ pub const Canvas = struct {
         }
 
         pub fn fill(self: *DrawContextImpl) void {
-            const rt = self.render_target.ID2D1RenderTarget;
+            const rt: *win32.ID2D1RenderTarget = @ptrCast(self.render_target);
 
             if (self.pending_gradient) |gradient| {
                 // Build gradient stops
@@ -1326,7 +1331,7 @@ pub const Canvas = struct {
         }
 
         pub fn stroke(self: *DrawContextImpl) void {
-            const rt = self.render_target.ID2D1RenderTarget;
+            const rt: *win32.ID2D1RenderTarget = @ptrCast(self.render_target);
             for (self.path.items) |element| {
                 switch (element) {
                     .rectangle => |rect| rt.DrawRectangle(&rect, @ptrCast(self.brush), self.stroke_width, null),

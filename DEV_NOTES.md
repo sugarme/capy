@@ -135,6 +135,43 @@
 - Replaced body with `@compileError` since it used old Zig 0.13 API
 - File: vendor/zigwin32/zig.zig
 
+### std.fs.File in vendored zigimg → std.Io.File
+- `std.fs.File` → `std.Io.File`, `std.fs.File.Reader` → `std.Io.File.Reader`, `std.fs.File.Writer` → `std.Io.File.Writer`
+- `std.fs.File.SeekError` → `std.Io.File.SeekError`, `std.fs.File.Reader.SeekError` → `std.Io.File.Reader.SeekError`
+- `initFile(file, buffer)` → `initFile(file, io, buffer)` (file.reader/writer now require `io` param)
+- File: zig-pkg/zigimg-*/src/io.zig
+- Caller updated: src/image.zig
+
+### WINDOW_STYLE packed struct (not enum)
+- `win32.WS_CAPTION`, `win32.WS_THICKFRAME`, `win32.WS_EX_*` are `packed struct(u32)`, not enums
+- `@intFromEnum(win32.WS_CAPTION)` → `@as(u32, @bitCast(win32.WS_CAPTION))`
+- File: src/backends/win32/backend.zig (fullscreen/unfullscreen)
+
+### COM extern union value-copy bug (D2D segfault at address 0x10)
+- In Zig 0.16, accessing a COM interface field on an `extern union` through a pointer
+  (e.g. `render_target.ID2D1RenderTarget.FillEllipse(...)`) copies the union value to
+  a stack temporary. The method auto-references this copy, passing a stack address as
+  the COM `self`/`this` pointer instead of the real COM object pointer. The vtable
+  dispatch succeeds (correct vtable ptr), but d2d1.dll crashes when accessing internal
+  object state beyond offset 0 from the wrong `this`.
+- Symptom: `Segmentation fault at address 0x10` inside d2d1.dll on any D2D draw call
+  (FillRectangle, FillEllipse, etc.)
+- Fix: use `@ptrCast` to reinterpret the derived COM pointer as the base interface
+  pointer, preserving the original heap address:
+  ```zig
+  // BEFORE (broken in 0.16 — copies extern union value to stack):
+  const rt = self.render_target.ID2D1RenderTarget;
+  rt.FillRectangle(&rect, @ptrCast(self.brush));
+
+  // AFTER (correct — reinterprets pointer, no copy):
+  const rt: *win32.ID2D1RenderTarget = @ptrCast(self.render_target);
+  rt.FillRectangle(&rect, @ptrCast(self.brush));
+  ```
+- Same fix applied to `.IUnknown.QueryInterface(...)` calls on render targets
+- File: src/backends/win32/backend.zig (WM_PAINT handler, DrawContextImpl methods:
+  fill, stroke, line, clear, text)
+
 ### Result
 - **All 55 build steps compile successfully with zero errors**
+- All D2D-using examples (slide-viewer, media-player, colors, graph, etc.) run without segfault
 - Zig version: 0.16.0-dev.2676+4e2cec265
