@@ -119,7 +119,7 @@ pub fn setIcon(self: *Window, icon_data: lib.ImageData) void {
 
     // Create temp icon theme directory: /tmp/capy-icons/hicolor/256x256/apps/
     const dir_path = "/tmp/capy-icons/hicolor/256x256/apps";
-    std.fs.cwd().makePath(dir_path) catch return;
+    std.Io.Dir.cwd().createDirPath(@import("../../internal.zig").io, dir_path) catch return;
 
     // Save the pixbuf as PNG to the icon theme directory
     const file_path = dir_path ++ "/" ++ icon_name ++ ".png";

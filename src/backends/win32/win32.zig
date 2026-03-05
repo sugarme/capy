@@ -8,12 +8,12 @@ const zigwin32 = @import("zigwin32");
 // pub usingnamespace zigwin32.user32;
 
 pub const HINSTANCE = std.os.windows.HINSTANCE;
-pub const HWND = @import("zigwin32").everything.HWND;
-pub const WPARAM = std.os.windows.WPARAM;
+pub const HWND = zigwin32.everything.HWND;
+pub const WPARAM = zigwin32.everything.WPARAM;
 pub const LPARAM = std.os.windows.LPARAM;
-pub const LRESULT = std.os.windows.LRESULT;
+pub const LRESULT = zigwin32.everything.LRESULT;
 pub const HRESULT = std.os.windows.HRESULT;
-pub const RECT = std.os.windows.RECT;
+pub const RECT = zigwin32.everything.RECT;
 pub const LPRECT = *RECT;
 pub const WINAPI = std.builtin.CallingConvention.winapi;
 pub const HDC = std.os.windows.HDC;

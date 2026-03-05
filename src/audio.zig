@@ -7,7 +7,7 @@ pub const AudioWriteCallback = *const fn (generator: *const AudioGenerator, time
 
 // TODO: remove global variables
 var generators: std.ArrayList(*AudioGenerator) = .empty;
-var generatorsMutex = std.Thread.Mutex{};
+var generatorsMutex = std.Io.Mutex.init;
 
 pub const AudioGenerator = struct {
     write_callback: *const anyopaque, // due to a bug in zig compiler with false dependency loop
@@ -30,8 +30,8 @@ pub const AudioGenerator = struct {
 
     pub fn register(self: *AudioGenerator) !void {
         // TODO: should it be registered automatically ?
-        generatorsMutex.lock();
-        defer generatorsMutex.unlock();
+        generatorsMutex.lockUncancelable(internal.io);
+        defer generatorsMutex.unlock(internal.io);
 
         try generators.append(internal.allocator, self);
     }
@@ -58,8 +58,8 @@ pub const AudioGenerator = struct {
 
     pub fn deinit(self: *AudioGenerator) void {
         self.stop();
-        generatorsMutex.lock();
-        generatorsMutex.unlock();
+        generatorsMutex.lockUncancelable(internal.io);
+        generatorsMutex.unlock(internal.io);
 
         if (std.mem.indexOfScalar(*AudioGenerator, generators.items, self)) |index| {
             _ = generators.swapRemove(index);
@@ -82,14 +82,14 @@ pub const AudioPlayer = struct {
 
 /// Internal method.
 pub fn backendUpdate() void {
-    generatorsMutex.lock();
-    defer generatorsMutex.unlock();
+    generatorsMutex.lockUncancelable(internal.io);
+    defer generatorsMutex.unlock(internal.io);
     for (generators.items) |generator| {
         generator.onWriteRequested(4410);
     }
 }
 
 pub fn deinit() void {
-    generatorsMutex.lock();
+    generatorsMutex.lockUncancelable(internal.io);
     generators.deinit(internal.allocator);
 }

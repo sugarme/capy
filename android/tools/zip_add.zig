@@ -15,10 +15,19 @@ const Error = error{
 };
 
 // zip_add file.zip local_path zip_path
-pub fn main() Error!u8 {
-    const allocator = std.heap.c_allocator;
+pub fn main(init: std.process.Init) Error!u8 {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
+    // Collect args into a slice
+    var args_list: std.ArrayList([]const u8) = .empty;
+    var args_it = init.minimal.args.initAllocator(allocator) catch return error.OutOfMemory;
+    defer args_it.deinit();
+    while (args_it.next()) |arg| {
+        args_list.append(allocator, arg) catch return error.OutOfMemory;
+    }
+    const args = args_list.items;
+
     if (args.len < 5)
         return 1;
 
@@ -31,27 +40,27 @@ pub fn main() Error!u8 {
 
     // Create a copy of the zip file instead of modifying the old one
     {
-        const cwd = std.fs.cwd();
+        const cwd = std.Io.Dir.cwd();
         const old_base = std.fs.path.basename(zip_file);
         var old_dir = new_dir: {
             if (std.fs.path.dirname(zip_file)) |in_path| {
-                break :new_dir cwd.openDir(in_path, .{}) catch return error.FailedToCopyZip;
+                break :new_dir cwd.openDir(io, in_path, .{}) catch return error.FailedToCopyZip;
             } else {
                 break :new_dir cwd;
             }
         };
-        defer if (old_dir.fd != cwd.fd) old_dir.close();
+        defer if (old_dir.handle != cwd.handle) old_dir.close(io);
         const new_base = std.fs.path.basename(out_file);
         var new_dir = new_dir: {
             if (std.fs.path.dirname(out_file)) |out_path| {
-                break :new_dir cwd.openDir(out_path, .{}) catch return error.FailedToCopyZip;
+                break :new_dir cwd.openDir(io, out_path, .{}) catch return error.FailedToCopyZip;
             } else {
                 break :new_dir cwd;
             }
         };
-        defer if (new_dir.fd != cwd.fd) new_dir.close();
+        defer if (new_dir.handle != cwd.handle) new_dir.close(io);
 
-        old_dir.copyFile(old_base, new_dir, new_base, .{}) catch return error.FailedToCopyZip;
+        old_dir.copyFile(old_base, new_dir, new_base, io, .{}) catch return error.FailedToCopyZip;
     }
 
     const zip = c.zip_open(out_file.ptr, c.ZIP_DEFAULT_COMPRESSION_LEVEL, 'a') orelse return error.FileNotFound;

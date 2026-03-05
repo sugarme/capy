@@ -3,11 +3,12 @@ const c = @import("gtk.zig");
 const lib = @import("../../capy.zig");
 const common = @import("common.zig");
 const DrawContext = @import("../../backend.zig").DrawContext;
+const internal = @import("../../internal.zig");
 
 const ImageData = @This();
 
 peer: *c.GdkPixbuf,
-mutex: std.Thread.Mutex = .{},
+mutex: std.Io.Mutex = std.Io.Mutex.init,
 width: usize,
 height: usize,
 
@@ -24,7 +25,7 @@ pub const DrawLock = struct {
         self.data.peer = c.gdk_pixbuf_get_from_surface(self._surface, 0, 0, width, height).?;
         c.cairo_destroy(self.draw_context.impl.cr);
         c.cairo_surface_destroy(self._surface);
-        self.data.mutex.unlock();
+        self.data.mutex.unlock(internal.io);
     }
 };
 
@@ -50,7 +51,7 @@ pub fn from(width: usize, height: usize, stride: usize, cs: lib.Colorspace, byte
 }
 
 pub fn draw(self: *ImageData) DrawLock {
-    self.mutex.lock();
+    self.mutex.lockUncancelable(internal.io);
     // TODO: just create one surface and use it forever
     const stride = @divFloor(
         @as(c_int, @intCast(c.gdk_pixbuf_get_byte_length(self.peer))),
@@ -74,8 +75,8 @@ pub fn draw(self: *ImageData) DrawLock {
 }
 
 pub fn deinit(self: *ImageData) void {
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(internal.io);
+    defer self.mutex.unlock(internal.io);
 
     c.g_object_unref(@as(*c.GObject, @ptrCast(@alignCast(self.peer))));
 }

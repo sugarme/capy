@@ -253,7 +253,7 @@ pub fn main() !void {
     };
     var listener_data = ListenerData{
         .rectangleX = &rectangleX,
-        .animStart = std.time.milliTimestamp(),
+        .animStart = std.Io.Timestamp.now(capy.internal.io, .real).toMilliseconds(),
     };
 
     // Listeners are always deinitialized when the event source is destroyed.
@@ -263,9 +263,9 @@ pub fn main() !void {
         .callback = struct {
             fn callback(userdata: ?*anyopaque) void {
                 const data: *ListenerData = @ptrCast(@alignCast(userdata.?));
-                var dt = std.time.milliTimestamp() - data.animStart;
+                var dt = std.Io.Timestamp.now(capy.internal.io, .real).toMilliseconds() - data.animStart;
                 if (dt > 1500)
-                    data.animStart = std.time.milliTimestamp();
+                    data.animStart = std.Io.Timestamp.now(capy.internal.io, .real).toMilliseconds();
                 if (dt > 1000)
                     dt = 1000;
                 const t = @as(f32, @floatFromInt(dt)) / 1000;

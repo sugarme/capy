@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const c = @import("c.zig");
+const c = @import("c.zig")._c;
 
 const android = @import("android-bind.zig");
 const build_options = @import("build_options");
@@ -14,11 +14,113 @@ pub const NativeInvocationHandler = @import("NativeInvocationHandler.zig");
 
 const app_log = std.log.scoped(.app_glue);
 
-// TODO: `pub usingnamespace android;` was removed to eliminate usingnamespace.
-// The android-bind.zig module contains hundreds of auto-generated Android NDK bindings.
-// To complete this replacement, identify which declarations from android-bind.zig are
-// actually used by consumers of this module and forward them explicitly.
-// For now, this is Android-only code and does not affect macOS compilation.
+// Re-export android-bind.zig declarations used by consumers of this module.
+// (pub usingnamespace was removed in Zig 0.16)
+//
+// JNI types
+pub const JNIEnv = android.JNIEnv;
+pub const JNINativeInterface = android.JNINativeInterface;
+pub const JNINativeMethod = android.JNINativeMethod;
+pub const JNI_TRUE = android.JNI_TRUE;
+pub const JNI_VERSION_1_6 = android.JNI_VERSION_1_6;
+pub const jobject = android.jobject;
+pub const jobjectArray = android.jobjectArray;
+pub const jclass = android.jclass;
+pub const jfieldID = android.jfieldID;
+pub const jfloat = android.jfloat;
+pub const jint = android.jint;
+pub const jlong = android.jlong;
+pub const jmethodID = android.jmethodID;
+pub const jstring = android.jstring;
+pub const jvalue = android.jvalue;
+// Native Activity
+pub const ANativeActivity = android.ANativeActivity;
+pub const ANativeActivityCallbacks = android.ANativeActivityCallbacks;
+pub const ANativeActivity_createFunc = android.ANativeActivity_createFunc;
+pub const ANativeWindow = android.ANativeWindow;
+pub const ANativeWindow_getWidth = android.ANativeWindow_getWidth;
+pub const ANativeWindow_getHeight = android.ANativeWindow_getHeight;
+// Input
+pub const AInputEvent = android.AInputEvent;
+pub const AInputEventType = android.AInputEventType;
+pub const AInputEvent_getType = android.AInputEvent_getType;
+pub const AInputQueue = android.AInputQueue;
+pub const AInputQueue_getEvent = android.AInputQueue_getEvent;
+pub const AInputQueue_preDispatchEvent = android.AInputQueue_preDispatchEvent;
+pub const AInputQueue_finishEvent = android.AInputQueue_finishEvent;
+pub const AKEY_EVENT_ACTION_DOWN = android.AKEY_EVENT_ACTION_DOWN;
+pub const AKeyEventActionType = android.AKeyEventActionType;
+pub const AKeyEvent_getAction = android.AKeyEvent_getAction;
+pub const AKeyEvent_getDownTime = android.AKeyEvent_getDownTime;
+pub const AKeyEvent_getEventTime = android.AKeyEvent_getEventTime;
+pub const AKeyEvent_getFlags = android.AKeyEvent_getFlags;
+pub const AKeyEvent_getKeyCode = android.AKeyEvent_getKeyCode;
+pub const AKeyEvent_getMetaState = android.AKeyEvent_getMetaState;
+pub const AKeyEvent_getRepeatCount = android.AKeyEvent_getRepeatCount;
+pub const AKeyEvent_getScanCode = android.AKeyEvent_getScanCode;
+pub const AMotionEventActionType = android.AMotionEventActionType;
+pub const AMotionEvent_getAction = android.AMotionEvent_getAction;
+pub const AMotionEvent_getButtonState = android.AMotionEvent_getButtonState;
+pub const AMotionEvent_getDownTime = android.AMotionEvent_getDownTime;
+pub const AMotionEvent_getEdgeFlags = android.AMotionEvent_getEdgeFlags;
+pub const AMotionEvent_getEventTime = android.AMotionEvent_getEventTime;
+pub const AMotionEvent_getFlags = android.AMotionEvent_getFlags;
+pub const AMotionEvent_getMetaState = android.AMotionEvent_getMetaState;
+pub const AMotionEvent_getOrientation = android.AMotionEvent_getOrientation;
+pub const AMotionEvent_getPointerCount = android.AMotionEvent_getPointerCount;
+pub const AMotionEvent_getPointerId = android.AMotionEvent_getPointerId;
+pub const AMotionEvent_getPressure = android.AMotionEvent_getPressure;
+pub const AMotionEvent_getRawX = android.AMotionEvent_getRawX;
+pub const AMotionEvent_getRawY = android.AMotionEvent_getRawY;
+pub const AMotionEvent_getSize = android.AMotionEvent_getSize;
+pub const AMotionEvent_getToolMajor = android.AMotionEvent_getToolMajor;
+pub const AMotionEvent_getToolMinor = android.AMotionEvent_getToolMinor;
+pub const AMotionEvent_getToolType = android.AMotionEvent_getToolType;
+pub const AMotionEvent_getTouchMajor = android.AMotionEvent_getTouchMajor;
+pub const AMotionEvent_getTouchMinor = android.AMotionEvent_getTouchMinor;
+pub const AMotionEvent_getX = android.AMotionEvent_getX;
+pub const AMotionEvent_getXOffset = android.AMotionEvent_getXOffset;
+pub const AMotionEvent_getXPrecision = android.AMotionEvent_getXPrecision;
+pub const AMotionEvent_getY = android.AMotionEvent_getY;
+pub const AMotionEvent_getYOffset = android.AMotionEvent_getYOffset;
+pub const AMotionEvent_getYPrecision = android.AMotionEvent_getYPrecision;
+// Looper
+pub const ALooper = android.ALooper;
+pub const ALooper_acquire = android.ALooper_acquire;
+pub const ALooper_addFd = android.ALooper_addFd;
+pub const ALooper_forThread = android.ALooper_forThread;
+pub const ALooper_release = android.ALooper_release;
+pub const ALOOPER_EVENT_INPUT = android.ALOOPER_EVENT_INPUT;
+// Configuration
+pub const AConfiguration = android.AConfiguration;
+pub const AConfiguration_delete = android.AConfiguration_delete;
+pub const AConfiguration_fromAssetManager = android.AConfiguration_fromAssetManager;
+pub const AConfiguration_getCountry = android.AConfiguration_getCountry;
+pub const AConfiguration_getDensity = android.AConfiguration_getDensity;
+pub const AConfiguration_getKeyboard = android.AConfiguration_getKeyboard;
+pub const AConfiguration_getKeysHidden = android.AConfiguration_getKeysHidden;
+pub const AConfiguration_getLanguage = android.AConfiguration_getLanguage;
+pub const AConfiguration_getMcc = android.AConfiguration_getMcc;
+pub const AConfiguration_getMnc = android.AConfiguration_getMnc;
+pub const AConfiguration_getNavHidden = android.AConfiguration_getNavHidden;
+pub const AConfiguration_getNavigation = android.AConfiguration_getNavigation;
+pub const AConfiguration_getOrientation = android.AConfiguration_getOrientation;
+pub const AConfiguration_getScreenLong = android.AConfiguration_getScreenLong;
+pub const AConfiguration_getScreenSize = android.AConfiguration_getScreenSize;
+pub const AConfiguration_getSdkVersion = android.AConfiguration_getSdkVersion;
+pub const AConfiguration_getTouchscreen = android.AConfiguration_getTouchscreen;
+pub const AConfiguration_getUiModeNight = android.AConfiguration_getUiModeNight;
+pub const AConfiguration_getUiModeType = android.AConfiguration_getUiModeType;
+pub const AConfiguration_new = android.AConfiguration_new;
+// Logging
+pub const ANDROID_LOG_DEBUG = android.ANDROID_LOG_DEBUG;
+pub const ANDROID_LOG_ERROR = android.ANDROID_LOG_ERROR;
+pub const ANDROID_LOG_INFO = android.ANDROID_LOG_INFO;
+pub const ANDROID_LOG_WARN = android.ANDROID_LOG_WARN;
+// System
+pub const __system_property_get = android.__system_property_get;
+pub const __android_log_write = android.__android_log_write;
+pub const ARect = android.ARect;
 
 const AndroidApp = @import("root").AndroidApp;
 
@@ -74,7 +176,7 @@ export fn ANativeActivity_onCreate(activity: *android.ANativeActivity, savedStat
         else
             null,
     ) catch |err| {
-        std.err("Failed to restore app state: {}\n", .{err});
+        std.log.err("Failed to restore app state: {}\n", .{err});
         std.heap.c_allocator.destroy(app);
         return;
     };
@@ -104,45 +206,21 @@ pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usi
     var logger = LogWriter{ .log_level = android.ANDROID_LOG_ERROR };
 
     if (@atomicLoad(bool, &recursive_panic, .SeqCst)) {
-        logger.writer().print("RECURSIVE PANIC: {s}\n", .{message}) catch {};
-        while (true) {
-            std.time.sleep(std.time.ns_per_week);
-        }
+        logger.print("RECURSIVE PANIC: {s}\n", .{message});
+        std.process.exit(1);
     }
 
     @atomicStore(bool, &recursive_panic, true, .SeqCst);
 
-    logger.writer().print("PANIC: {s}\n", .{message}) catch {};
+    logger.print("PANIC: {s}\n", .{message});
 
-    const maybe_debug_info = std.debug.getSelfDebugInfo() catch null;
-
-    //    dumpStackTrace(maybe_debug_info);
-
-    {
-        var count: usize = 0;
-        var it = std.debug.StackIterator.init(null, null);
-        while (it.next()) |return_address| {
-            printSymbolInfoAt(count, maybe_debug_info, return_address);
-            count += 1;
-        }
-    }
-
+    // Stack trace iteration requires Io in Zig 0.16, which is not available in the panic handler.
+    // The android log above will still show the panic message.
     _ = stack_trace;
-    // if (stack_trace) |st| {
-    //     logger.writer().print("{}\n", .{st}) catch {};
-    // }
 
-    // if (std.debug.getSelfDebugInfo()) |debug_info| {
-    // std.debug.writeCurrentStackTrace(logger.writer(), debug_info, .no_color, null) catch |err| {
-    //     logger.writer().print("failed to write stack trace: {s}\n", .{err}) catch {};
-    // };
-    // } else |err| {
-    //     logger.writer().print("failed to get debug info: {s}\n", .{err}) catch {};
-    // }
+    logger.writeAll("<-- end of panic -->\n");
 
-    logger.writer().writeAll("<-- end of stack trace -->\n") catch {};
-
-    std.os.exit(1);
+    std.process.exit(1);
 }
 
 const LogWriter = struct {
@@ -151,10 +229,7 @@ const LogWriter = struct {
     line_buffer: [8192]u8 = undefined,
     line_len: usize = 0,
 
-    const Error = error{};
-    const Writer = std.io.Writer(*LogWriter, Error, write);
-
-    fn write(self: *LogWriter, buffer: []const u8) Error!usize {
+    fn writeBytes(self: *LogWriter, buffer: []const u8) void {
         for (buffer) |char| {
             switch (char) {
                 '\n' => {
@@ -169,19 +244,10 @@ const LogWriter = struct {
                 },
             }
         }
-        return buffer.len;
     }
 
     fn flush(self: *LogWriter) void {
         if (self.line_len > 0) {
-            // var buf = std.mem.zeroes([129]u8);
-            // const msg = std.fmt.bufPrint(&buf, "PRINT({})\x00", .{self.line_len}) catch "PRINT(???)";
-            // _ = android.__android_log_write(
-            //     self.log_level,
-            //     build_options.app_name.ptr,
-            //     msg.ptr,
-            // );
-
             std.debug.assert(self.line_len < self.line_buffer.len - 1);
             self.line_buffer[self.line_len] = 0;
             _ = android.__android_log_write(
@@ -193,8 +259,17 @@ const LogWriter = struct {
         self.line_len = 0;
     }
 
-    fn writer(self: *LogWriter) Writer {
-        return Writer{ .context = self };
+    fn print(self: *LogWriter, comptime fmt: []const u8, args: anytype) void {
+        var buf: [4096]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, fmt, args) catch {
+            self.writeBytes("(fmt error)");
+            return;
+        };
+        self.writeBytes(msg);
+    }
+
+    fn writeAll(self: *LogWriter, bytes: []const u8) void {
+        self.writeBytes(bytes);
     }
 };
 
@@ -220,7 +295,7 @@ pub const std_options = struct {
         };
         defer logger.flush();
 
-        logger.writer().print("{s}: " ++ format, .{@tagName(scope)} ++ args) catch {};
+        logger.print("{s}: " ++ format, .{@tagName(scope)} ++ args);
     }
 };
 
@@ -331,55 +406,7 @@ fn makeNativeActivityGlue(comptime App: type) android.ANativeActivityCallbacks {
     };
 }
 
-inline fn printSymbolInfoAt(st_index: usize, maybe_debug_info: ?*std.debug.DebugInfo, int_addr: usize) void {
-    var symbol_name_buffer: [1024]u8 = undefined;
-    var symbol_name: ?[]const u8 = null;
-
-    if (maybe_debug_info) |di| {
-        if (di.getModuleForAddress(int_addr)) |module| {
-            var symbol_buffer: [1024]u8 = undefined;
-            var fba = std.heap.FixedBufferAllocator.init(&symbol_buffer);
-
-            if (module.getSymbolAtAddress(fba.allocator(), int_addr)) |symbol| {
-
-                // symbol_name_buffer
-
-                symbol_name = std.fmt.bufPrint(
-                    &symbol_name_buffer,
-                    "{s} {s} {s}",
-                    .{
-                        symbol.symbol_name,
-                        symbol.compile_unit_name,
-                        fmtMaybeLineInfo(symbol.line_info),
-                    },
-                ) catch symbol_name;
-            } else |_| {}
-        } else |_| {}
-    }
-
-    std.log.info("#{d:0>2}: 0x{X:0>8} {?s}", .{
-        st_index,
-        int_addr,
-        symbol_name,
-    });
-}
-
-fn realFmtMaybeLineInfo(self: ?std.debug.LineInfo, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-    _ = fmt;
-    _ = options;
-    if (self) |li| {
-        try writer.print("{s}:{d}:{d}", .{
-            li.file_name,
-            li.line,
-            li.column,
-        });
-    } else {
-        try writer.writeAll("<no line info>");
-    }
-}
-
-fn fmtMaybeLineInfo(li: ?std.debug.LineInfo) std.fmt.Formatter(realFmtMaybeLineInfo) {
-    return std.fmt.Formatter(realFmtMaybeLineInfo){
-        .data = li,
-    };
-}
+// NOTE: printSymbolInfoAt, realFmtMaybeLineInfo, and fmtMaybeLineInfo were removed
+// because they referenced std.debug.LineInfo and SelfInfo APIs that changed in Zig 0.16.
+// The panic handler no longer uses stack trace iteration (it requires Io in 0.16),
+// so these functions are no longer needed.

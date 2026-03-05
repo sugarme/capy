@@ -179,7 +179,7 @@ test "backend: create window" {
             window.resize(random.int(u16), random.int(u16));
             try std.testing.expectEqual(i < 150, backend.runStep(.Asynchronous));
 
-            std.Thread.sleep(1 * std.time.ns_per_ms);
+            std.Io.sleep(@import("internal.zig").io, std.Io.Duration.fromMilliseconds(1), .awake) catch {};
         }
     }
 }

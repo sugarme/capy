@@ -2,6 +2,24 @@ const std = @import("std");
 const log = std.log.scoped(.jni);
 const android = @import("android-support.zig");
 
+/// Replacement for std.meta.trait.isZigString which was removed in Zig 0.16.
+fn isZigString(comptime T: type) bool {
+    return comptime blk: {
+        // []const u8, [:0]const u8, etc.
+        if (@typeInfo(T) == .pointer) {
+            const info = @typeInfo(T).pointer;
+            if (info.size == .slice) {
+                break :blk info.child == u8;
+            }
+            // *const [N]u8, *const [N:0]u8
+            if (@typeInfo(info.child) == .array) {
+                break :blk @typeInfo(info.child).array.child == u8;
+            }
+        }
+        break :blk false;
+    };
+}
+
 /// Wraps JNIEnv to provide a better Zig API.
 /// *android.JNIEnv can be directly cast to `*JNI`. For example:
 /// ```
@@ -34,7 +52,7 @@ pub const JNI = opaque {
         if (jni.invokeJniNoException(.ExceptionCheck, .{}) == android.JNI_TRUE) {
             log.err("Encountered exception while calling: {s} {any}", .{ @tagName(function), args });
             inline for (args, 0..) |arg, i| {
-                if (comptime std.meta.trait.isZigString(@TypeOf(arg))) {
+                if (comptime isZigString(@TypeOf(arg))) {
                     log.err("Arg {d}: {s}", .{ i, arg });
                 }
             }
@@ -60,7 +78,9 @@ pub const JNI = opaque {
     pub fn printToString(jni: *JNI, object: android.jobject) void {
         const string = try String.init(jni, try jni.callObjectMethod(object, "toString", "()Ljava/lang/String;", .{}));
         defer string.deinit(jni);
-        log.info("{any}: {}", .{ object, std.unicode.fmtUtf16le(string.slice) });
+        var utf8_buf: [256]u8 = undefined;
+        const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, string.slice) catch 0;
+        log.info("{any}: {s}", .{ object, utf8_buf[0..utf8_len] });
     }
 
     pub fn newString(jni: *JNI, string: [*:0]const u8) Error!android.jstring {

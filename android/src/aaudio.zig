@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const c = @import("c.zig");
+const c = @import("c.zig")._c;
 
 const OutputStreamConfig = @import("audio.zig").OutputStreamConfig;
 const StreamLayout = @import("audio.zig").StreamLayout;

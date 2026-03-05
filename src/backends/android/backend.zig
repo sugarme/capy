@@ -790,7 +790,7 @@ pub const backendExport = struct {
         // The JNIEnv of the app thread
         mainJni: *android.JNI = undefined,
         uiThreadId: std.Thread.Id = undefined,
-        uiThreadMutex: std.Thread.Mutex = .{},
+        uiThreadMutex: std.Io.Mutex = std.Io.Mutex.init,
 
         // This is needed because to run a callback on the UI thread Looper you must
         // react to a fd change, so we use a pipe to force it
@@ -860,8 +860,8 @@ pub const backendExport = struct {
                 return;
             }
 
-            self.uiThreadMutex.lock();
-            defer self.uiThreadMutex.unlock();
+            self.uiThreadMutex.lockUncancelable(lib.internal.io);
+            defer self.uiThreadMutex.unlock(lib.internal.io);
 
             // TODO: use a mutex so that there aren't concurrent requests which wouldn't mix well with addFd
             const Args = @TypeOf(args);

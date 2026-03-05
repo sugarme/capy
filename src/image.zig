@@ -38,7 +38,7 @@ pub const ImageData = struct {
     }
 
     pub fn fromFile(allocator: std.mem.Allocator, path: []const u8) !ImageData {
-        const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
+        const file = try std.Io.Dir.cwd().openFile(internal.io, path, .{ .mode = .read_only });
         var file_read_buf: [4096]u8 = undefined;
         var stream = zigimg.io.ReadStream.initFile(file, &file_read_buf);
         return readFromStream(allocator, &stream);

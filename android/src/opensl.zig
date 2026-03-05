@@ -1,11 +1,26 @@
 const std = @import("std");
 
-const c = @import("c.zig");
+const c = @import("c.zig")._c;
 
 const OutputStreamConfig = @import("audio.zig").OutputStreamConfig;
 const StreamLayout = @import("audio.zig").StreamLayout;
 
 const audio_log = std.log.scoped(.audio);
+
+/// Simple spin-lock mutex for android runtime (std.Thread.Mutex was removed in Zig 0.16)
+const SpinMutex = struct {
+    inner: std.atomic.Mutex = .unlocked,
+
+    pub fn lock(self: *SpinMutex) void {
+        while (!self.inner.tryLock()) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *SpinMutex) void {
+        self.inner.unlock();
+    }
+};
 
 // OpenSLES support
 pub const OpenSL = struct {
@@ -33,7 +48,7 @@ pub const OpenSL = struct {
 
         buffer: []i16,
         buffer_index: usize,
-        mutex: std.Thread.Mutex,
+        mutex: SpinMutex,
         allocator: std.mem.Allocator,
 
         // Must be initialized using OpenSL.getOutputStream
@@ -238,7 +253,7 @@ pub const OpenSL = struct {
             },
 
             // Thread safety
-            .mutex = std.Thread.Mutex{},
+            .mutex = .{},
 
             .allocator = allocator,
         };
@@ -302,7 +317,7 @@ pub const OpenSL = struct {
     };
 
     pub fn checkResult(result: u32) SLError!void {
-        const tag = std.meta.intToEnum(Result, result) catch return error.UnknownError;
+        const tag: Result = @enumFromInt(result);
         return switch (tag) {
             .Success => {},
             .PreconditionsViolated => error.PreconditionsViolated,

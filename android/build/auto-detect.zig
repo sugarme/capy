@@ -13,6 +13,7 @@ const print = std.debug.print;
 
 pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig {
     // var str_buf: [5]u8 = undefined;
+    const io = b.graph.io;
 
     var config = UserConfig{};
     var config_dirty: bool = false;
@@ -22,12 +23,7 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
     const config_dir = b.pathFromRoot(build_config_dir);
 
     // Check for a user config file.
-    if (std.fs.cwd().openFile(config_path, .{})) |file| {
-        defer file.close();
-        const bytes = file.readToEndAlloc(b.allocator, 1 * 1000 * 1000) catch |err| {
-            print("Unexpected error reading {s}: {s}\n", .{ config_path, @errorName(err) });
-            return err;
-        };
+    if (std.Io.Dir.cwd().readFileAlloc(io, config_path, b.allocator, .unlimited)) |bytes| {
         if (std.json.parseFromSlice(UserConfig, b.allocator, bytes, .{})) |conf| {
             config = conf.value;
         } else |err| {
@@ -39,7 +35,7 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
             config_dirty = true;
         },
         else => {
-            print("Unexpected error opening {s}: {s}\n", .{ config_path, @errorName(err) });
+            print("Unexpected error reading {s}: {s}\n", .{ config_path, @errorName(err) });
             return err;
         },
     }
@@ -56,7 +52,7 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
 
     if (config.android_sdk_root.len == 0) {
         // try to find the android home
-        if (std.process.getEnvVarOwned(b.allocator, "ANDROID_HOME")) |value| {
+        if (b.graph.environ_map.get("ANDROID_HOME")) |value| {
             if (value.len > 0) {
                 if (findProblemWithAndroidSdk(b, versions, value)) |problem| {
                     print("Cannot use ANDROID_HOME ({s}):\n    {s}\n", .{ value, problem });
@@ -66,14 +62,12 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
                     config_dirty = true;
                 }
             }
-        } else |_| {
-            // ignore if env var is not found
         }
     }
 
     if (config.android_sdk_root.len == 0) {
         // try to find the android home
-        if (std.process.getEnvVarOwned(b.allocator, "ANDROID_SDK_ROOT")) |value| {
+        if (b.graph.environ_map.get("ANDROID_SDK_ROOT")) |value| {
             if (value.len > 0) {
                 if (findProblemWithAndroidSdk(b, versions, value)) |problem| {
                     print("Cannot use ANDROID_SDK_ROOT ({s}):\n    {s}\n", .{ value, problem });
@@ -83,8 +77,6 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
                     config_dirty = true;
                 }
             }
-        } else |_| {
-            // ignore environment variable failure
         }
     }
 
@@ -190,7 +182,7 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
         // If we didn't find an sdk in the registry, check the default install location.
         // On windows, this is AppData/Local/Android.
         if (config.android_sdk_root.len == 0) {
-            if (std.process.getEnvVarOwned(b.allocator, "LOCALAPPDATA")) |appdata_local| {
+            if (b.graph.environ_map.get("LOCALAPPDATA")) |appdata_local| {
                 const sdk_path = pathConcat(b, appdata_local, "Android");
                 if (findProblemWithAndroidSdk(b, versions, sdk_path)) |problem| {
                     print("Cannot use default Android Studio SDK\n    at {s}:\n    {s}\n", .{ sdk_path, problem });
@@ -199,15 +191,13 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
                     config.android_sdk_root = sdk_path;
                     config_dirty = true;
                 }
-            } else |_| {
-                // ignore env
             }
         }
     }
 
     // Finally, if we still don't have an sdk, see if `adb` is on the path and try to use that.
     if (config.android_sdk_root.len == 0) {
-        if (findProgramPath(b.allocator, "adb")) |path| {
+        if (findProgramPath(b, "adb")) |path| {
             const sep = std.fs.path.sep;
             if (std.mem.lastIndexOfScalar(u8, path, sep)) |index| {
                 var rest = path[0..index];
@@ -236,7 +226,7 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
 
     // first, check ANDROID_NDK_ROOT
     if (config.android_ndk_root.len == 0) {
-        if (std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK_ROOT")) |value| {
+        if (b.graph.environ_map.get("ANDROID_NDK_ROOT")) |value| {
             if (value.len > 0) {
                 if (findProblemWithAndroidNdk(b, versions, value)) |problem| {
                     print("Cannot use ANDROID_NDK_ROOT ({s}):\n    {s}\n", .{ value, problem });
@@ -246,7 +236,7 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
                     config_dirty = true;
                 }
             }
-        } else |_| {}
+        }
     }
 
     // Then check for a side-by-side install
@@ -277,7 +267,7 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
 
     // Check the JAVA_HOME variable
     if (config.java_home.len == 0) {
-        if (std.process.getEnvVarOwned(b.allocator, "JAVA_HOME")) |value| {
+        if (b.graph.environ_map.get("JAVA_HOME")) |value| {
             if (value.len > 0) {
                 if (findProblemWithJdk(b, value)) |problem| {
                     print("Cannot use JAVA_HOME ({s}):\n    {s}\n", .{ value, problem });
@@ -287,12 +277,12 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
                     config_dirty = true;
                 }
             }
-        } else |_| {}
+        }
     }
 
     // Look for `where jarsigner`
     if (config.java_home.len == 0) {
-        if (findProgramPath(b.allocator, "jarsigner")) |path| {
+        if (findProgramPath(b, "jarsigner")) |path| {
             const sep = std.fs.path.sep;
             if (std.mem.lastIndexOfScalar(u8, path, sep)) |last_slash| {
                 if (std.mem.lastIndexOfScalar(u8, path[0..last_slash], sep)) |second_slash| {
@@ -326,15 +316,15 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
 
     // Write out the new config
     if (config_dirty) {
-        std.fs.cwd().makeDir(config_dir) catch {};
-        var file = std.fs.cwd().createFile(config_path, .{}) catch |err| {
+        std.Io.Dir.cwd().createDir(io, config_dir, .default_dir) catch {};
+        var file = std.Io.Dir.cwd().createFile(io, config_path, .{}) catch |err| {
             print("Couldn't write config file {s}: {s}\n\n", .{ config_path, @errorName(err) });
             return err;
         };
-        defer file.close();
+        defer file.close(io);
 
         var write_buf: [4096]u8 = undefined;
-        var fw = file.writer(&write_buf);
+        var fw = file.writer(io, &write_buf);
 
         std.json.Stringify.value(config, .{}, &fw.interface) catch |err| {
             print("Error writing config file {s}: {s}\n", .{ config_path, @errorName(err) });
@@ -378,30 +368,27 @@ pub fn findUserConfig(b: *Builder, versions: Sdk.ToolchainVersions) !UserConfig 
     return config;
 }
 
-pub fn findProgramPath(allocator: std.mem.Allocator, program: []const u8) ?[]const u8 {
+pub fn findProgramPath(b: *Builder, program: []const u8) ?[]const u8 {
+    const allocator = b.allocator;
+    const io = b.graph.io;
+
     const args: []const []const u8 = if (builtin.os.tag == .windows)
         &[_][]const u8{ "where", program }
     else
         &[_][]const u8{ "which", program };
 
-    var proc = std.process.Child.init(args, allocator);
+    const result = std.process.run(allocator, io, .{
+        .argv = args,
+    }) catch return null;
 
-    proc.stderr_behavior = .Close;
-    proc.stdout_behavior = .Pipe;
-    proc.stdin_behavior = .Close;
-
-    proc.spawn() catch return null;
-
-    const stdout = proc.stdout.?.readToEndAlloc(allocator, 1024) catch return null;
-    const term = proc.wait() catch return null;
-    switch (term) {
-        .Exited => |rc| {
+    switch (result.term) {
+        .exited => |rc| {
             if (rc != 0) return null;
         },
         else => return null,
     }
 
-    var path = std.mem.trim(u8, stdout, " \t\r\n");
+    var path = std.mem.trim(u8, result.stdout, " \t\r\n");
     if (std.mem.indexOfScalar(u8, path, '\n')) |index| {
         path = std.mem.trim(u8, path[0..index], " \t\r\n");
     }
@@ -413,18 +400,19 @@ pub fn findProgramPath(allocator: std.mem.Allocator, program: []const u8) ?[]con
 // Returns the problem with an android_home path.
 // If it seems alright, returns null.
 fn findProblemWithAndroidSdk(b: *Builder, versions: Sdk.ToolchainVersions, path: []const u8) ?[]const u8 {
-    std.fs.cwd().access(path, .{}) catch |err| {
+    const io = b.graph.io;
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) return "Directory does not exist";
         return b.fmt("Cannot access {s}, {s}", .{ path, @errorName(err) });
     };
 
     const build_tools = pathConcat(b, path, "build-tools");
-    std.fs.cwd().access(build_tools, .{}) catch |err| {
+    std.Io.Dir.cwd().access(io, build_tools, .{}) catch |err| {
         return b.fmt("Cannot access build-tools/, {s}", .{@errorName(err)});
     };
 
     const versioned_tools = pathConcat(b, build_tools, versions.build_tools_version);
-    std.fs.cwd().access(versioned_tools, .{}) catch |err| {
+    std.Io.Dir.cwd().access(io, versioned_tools, .{}) catch |err| {
         if (err == error.FileNotFound) {
             return b.fmt("Missing build tools version {s}", .{versions.build_tools_version});
         } else {
@@ -451,7 +439,8 @@ fn findProblemWithAndroidSdk(b: *Builder, versions: Sdk.ToolchainVersions, path:
 // Returns the problem with an android ndk path.
 // If it seems alright, returns null.
 fn findProblemWithAndroidNdk(b: *Builder, versions: Sdk.ToolchainVersions, path: []const u8) ?[]const u8 {
-    std.fs.cwd().access(path, .{}) catch |err| {
+    const io = b.graph.io;
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) return "Directory does not exist";
         return b.fmt("Cannot access {s}, {s}", .{ path, @errorName(err) });
     };
@@ -466,7 +455,7 @@ fn findProblemWithAndroidNdk(b: *Builder, versions: Sdk.ToolchainVersions, path:
         "usr",
         "include",
     }) catch unreachable;
-    std.fs.cwd().access(ndk_include_path, .{}) catch |err| {
+    std.Io.Dir.cwd().access(io, ndk_include_path, .{}) catch |err| {
         return b.fmt("Cannot access {s}, {s}\nMake sure you are using NDK {s}.", .{ ndk_include_path, @errorName(err), versions.ndk_version });
     };
 
@@ -476,14 +465,15 @@ fn findProblemWithAndroidNdk(b: *Builder, versions: Sdk.ToolchainVersions, path:
 // Returns the problem with a jdk install.
 // If it seems alright, returns null.
 fn findProblemWithJdk(b: *Builder, path: []const u8) ?[]const u8 {
-    std.fs.cwd().access(path, .{}) catch |err| {
+    const io = b.graph.io;
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) return "Directory does not exist";
         return b.fmt("Cannot access {s}, {s}", .{ path, @errorName(err) });
     };
 
     const target_executable = if (builtin.os.tag == .windows) "bin\\jarsigner.exe" else "bin/jarsigner";
     const target_path = pathConcat(b, path, target_executable);
-    std.fs.cwd().access(target_path, .{}) catch |err| {
+    std.Io.Dir.cwd().access(io, target_path, .{}) catch |err| {
         return b.fmt("Cannot access jarsigner, {s}", .{@errorName(err)});
     };
 
@@ -494,8 +484,9 @@ fn pathConcat(b: *Builder, left: []const u8, right: []const u8) []const u8 {
     return std.fs.path.join(b.allocator, &[_][]const u8{ left, right }) catch unreachable;
 }
 
-pub fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch |err| {
+pub fn fileExists(b: *Builder, path: []const u8) bool {
+    const io = b.graph.io;
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) return false;
         std.log.debug("Cannot access {s}, {s}", .{ path, @errorName(err) });
         return false;

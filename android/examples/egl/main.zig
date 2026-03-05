@@ -12,6 +12,21 @@ const c = android.egl.c;
 
 const app_log = std.log.scoped(.app);
 
+/// Simple spin-lock mutex for android runtime (std.Thread.Mutex was removed in Zig 0.16)
+const SpinMutex = struct {
+    inner: std.atomic.Mutex = .unlocked,
+
+    pub fn lock(self: *SpinMutex) void {
+        while (!self.inner.tryLock()) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *SpinMutex) void {
+        self.inner.unlock();
+    }
+};
+
 comptime {
     _ = android.ANativeActivity_createFunc;
 }
@@ -36,11 +51,11 @@ pub const AndroidApp = struct {
     thread: ?std.Thread = null,
     running: bool = true,
 
-    egl_lock: std.Thread.Mutex = .{},
+    egl_lock: SpinMutex = .{},
     egl: ?EGLContext = null,
     egl_init: bool = true,
 
-    input_lock: std.Thread.Mutex = .{},
+    input_lock: SpinMutex = .{},
     input: ?*android.AInputQueue = null,
 
     config: ?*android.AConfiguration = null,
@@ -690,7 +705,8 @@ pub const AndroidApp = struct {
             }
             loop += 1;
 
-            std.time.sleep(10 * std.time.ns_per_ms);
+            // std.time.sleep requires Io in Zig 0.16; use linux nanosleep directly
+            _ = std.os.linux.nanosleep(&.{ .sec = 0, .nsec = 10 * std.time.ns_per_ms }, null);
         }
         app_log.info("mainLoop() finished\n", .{});
     }
@@ -709,9 +725,9 @@ const Vector4 = extern struct {
 
     fn readFromSlice(slice: []const u8) Vector4 {
         return Vector4{
-            .x = @as(f32, @bitCast(std.mem.readIntLittle(u32, slice[0..4]))),
-            .y = @as(f32, @bitCast(std.mem.readIntLittle(u32, slice[4..8]))),
-            .z = @as(f32, @bitCast(std.mem.readIntLittle(u32, slice[8..12]))),
+            .x = @as(f32, @bitCast(std.mem.readInt(u32, slice[0..4], .little))),
+            .y = @as(f32, @bitCast(std.mem.readInt(u32, slice[4..8], .little))),
+            .z = @as(f32, @bitCast(std.mem.readInt(u32, slice[8..12], .little))),
             .w = 1.0,
         };
     }
@@ -720,7 +736,7 @@ const Vector4 = extern struct {
 const mesh = blk: {
     const stl_data = @embedFile("logo.stl");
 
-    const count = std.mem.readIntLittle(u32, stl_data[80..][0..4]);
+    const count = std.mem.readInt(u32, stl_data[80..][0..4], .little);
 
     var slice: []const u8 = stl_data[84..];
 
@@ -734,7 +750,7 @@ const mesh = blk: {
         const v1 = Vector4.readFromSlice(slice[12..]);
         const v2 = Vector4.readFromSlice(slice[24..]);
         const v3 = Vector4.readFromSlice(slice[36..]);
-        const attrib_count = std.mem.readIntLittle(u16, slice[48..50]);
+        const attrib_count = std.mem.readInt(u16, slice[48..50], .little);
 
         array[3 * index + 0] = MeshVertex{
             .pos = v1,

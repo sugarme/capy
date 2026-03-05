@@ -5,10 +5,24 @@ const Atom = @import("data.zig").Atom;
 const ListAtom = @import("data.zig").ListAtom;
 const EventSource = @import("listener.zig").EventSource;
 
+/// Compat: Instant removed in Zig 0.16. Uses std.Io.Timestamp with awake clock.
+const Instant = struct {
+    timestamp: std.Io.Timestamp,
+
+    pub fn now() error{Unsupported}!Instant {
+        return Instant{ .timestamp = std.Io.Timestamp.now(internal.io, .awake) };
+    }
+
+    pub fn since(self: Instant, earlier: Instant) u64 {
+        const diff = earlier.timestamp.durationTo(self.timestamp);
+        return @intCast(@max(0, diff.nanoseconds));
+    }
+};
+
 pub var runningTimers = ListAtom(*Timer).init(internal.allocator);
 
 pub fn handleTimersTick(_: ?*anyopaque) void {
-    const now = std.time.Instant.now() catch @panic("a monotonic clock is required for timers");
+    const now = Instant.now() catch @panic("a monotonic clock is required for timers");
 
     var iterator = runningTimers.iterate();
     defer iterator.deinit();
@@ -26,7 +40,7 @@ pub fn handleTimersTick(_: ?*anyopaque) void {
 pub const Timer = struct {
     /// Whether the timer should only fire once.
     single_shot: bool,
-    started: ?std.time.Instant = null,
+    started: ?Instant = null,
     /// Duration in nanoseconds
     /// Note that despite the fact that the duration is in nanoseconds, this does not mean
     /// that a sub-millisecond precision is guarenteed.
@@ -54,7 +68,7 @@ pub const Timer = struct {
         if (self.started != null) {
             return error.TimerAlreadyRunning;
         }
-        self.started = try std.time.Instant.now();
+        self.started = try Instant.now();
         try runningTimers.append(self);
     }
 

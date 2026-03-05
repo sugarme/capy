@@ -308,40 +308,22 @@ pub fn pointFromLparam(lparam: win32.LPARAM) win32.POINT {
 }
 
 pub fn loword(value: anytype) u16 {
-    switch (comptime builtin.zig_version.order(zig_version_0_13)) {
-        .gt => switch (@typeInfo(@TypeOf(value))) {
-            .int => |int| switch (int.signedness) {
-                .signed => return loword(@as(@Type(.{ .int = .{ .signedness = .unsigned, .bits = int.bits } }), @bitCast(value))),
-                .unsigned => return if (int.bits <= 16) value else @intCast(0xffff & value),
-            },
-            else => {},
+    switch (@typeInfo(@TypeOf(value))) {
+        .int => |int| switch (int.signedness) {
+            .signed => return loword(@as(@Int(.unsigned, int.bits), @bitCast(value))),
+            .unsigned => return if (int.bits <= 16) value else @intCast(0xffff & value),
         },
-        .lt, .eq => switch (@typeInfo(@TypeOf(value))) {
-            .Int => |int| switch (int.signedness) {
-                .signed => return loword(@as(@Type(.{ .Int = .{ .signedness = .unsigned, .bits = int.bits } }), @bitCast(value))),
-                .unsigned => return if (int.bits <= 16) value else @intCast(0xffff & value),
-            },
-            else => {},
-        },
+        else => {},
     }
     @compileError("unsupported type " ++ @typeName(@TypeOf(value)));
 }
 pub fn hiword(value: anytype) u16 {
-    switch (comptime builtin.zig_version.order(zig_version_0_13)) {
-        .gt => switch (@typeInfo(@TypeOf(value))) {
-            .int => |int| switch (int.signedness) {
-                .signed => return hiword(@as(@Type(.{ .int = .{ .signedness = .unsigned, .bits = int.bits } }), @bitCast(value))),
-                .unsigned => return @intCast(0xffff & (value >> 16)),
-            },
-            else => {},
+    switch (@typeInfo(@TypeOf(value))) {
+        .int => |int| switch (int.signedness) {
+            .signed => return hiword(@as(@Int(.unsigned, int.bits), @bitCast(value))),
+            .unsigned => return @intCast(0xffff & (value >> 16)),
         },
-        .lt, .eq => switch (@typeInfo(@TypeOf(value))) {
-            .Int => |int| switch (int.signedness) {
-                .signed => return hiword(@as(@Type(.{ .Int = .{ .signedness = .unsigned, .bits = int.bits } }), @bitCast(value))),
-                .unsigned => return @intCast(0xffff & (value >> 16)),
-            },
-            else => {},
-        },
+        else => {},
     }
     @compileError("unsupported type " ++ @typeName(@TypeOf(value)));
 }
@@ -428,10 +410,7 @@ pub fn getClientSize(hwnd: win32.HWND) win32.SIZE {
 /// be before it knows the constant's type definition, so we delay the convession to compile-time where the compiler knows
 /// all type definition.
 pub fn typedConst(comptime T: type, comptime value: anytype) T {
-    return switch (comptime builtin.zig_version.order(zig_version_0_13)) {
-        .gt => typedConst2(T, T, value),
-        .lt, .eq => typedConst2_0_13(T, T, value),
-    };
+    return typedConst2(T, T, value);
 }
 
 fn typedConst2(comptime ReturnType: type, comptime SwitchType: type, comptime value: anytype) ReturnType {
@@ -442,7 +421,7 @@ fn typedConst2(comptime ReturnType: type, comptime SwitchType: type, comptime va
         .int => |target_type_info| {
             if (value >= std.math.maxInt(SwitchType)) {
                 if (target_type_info.signedness == .signed) {
-                    const UnsignedT = @Type(std.builtin.Type{ .int = .{ .signedness = .unsigned, .bits = target_type_info.bits } });
+                    const UnsignedT = @Int(.unsigned, target_type_info.bits);
                     return @as(SwitchType, @bitCast(@as(UnsignedT, value)));
                 }
             }
@@ -464,49 +443,16 @@ fn typedConst2(comptime ReturnType: type, comptime SwitchType: type, comptime va
             .pointer => return typedConst2(ReturnType, target_type_info.child, value),
             else => target_type_error,
         },
-        .@"enum" => |_| switch (@typeInfo(@TypeOf(value))) {
-            .Int => return @as(ReturnType, @enumFromInt(value)),
+        .@"enum" => switch (@typeInfo(@TypeOf(value))) {
+            .int, .comptime_int => return @as(ReturnType, @enumFromInt(value)),
             else => target_type_error,
         },
         else => @compileError(target_type_error),
     }
 }
 fn typedConst2_0_13(comptime ReturnType: type, comptime SwitchType: type, comptime value: anytype) ReturnType {
-    const target_type_error = @as([]const u8, "typedConst cannot convert to " ++ @typeName(ReturnType));
-    const value_type_error = @as([]const u8, "typedConst cannot convert " ++ @typeName(@TypeOf(value)) ++ " to " ++ @typeName(ReturnType));
-
-    switch (@typeInfo(SwitchType)) {
-        .Int => |target_type_info| {
-            if (value >= std.math.maxInt(SwitchType)) {
-                if (target_type_info.signedness == .signed) {
-                    const UnsignedT = @Type(std.builtin.Type{ .Int = .{ .signedness = .unsigned, .bits = target_type_info.bits } });
-                    return @as(SwitchType, @bitCast(@as(UnsignedT, value)));
-                }
-            }
-            return value;
-        },
-        .Pointer => |target_type_info| switch (target_type_info.size) {
-            .One, .Many, .C => {
-                switch (@typeInfo(@TypeOf(value))) {
-                    .ComptimeInt, .Int => {
-                        const usize_value = if (value >= 0) value else @as(usize, @bitCast(@as(isize, value)));
-                        return @as(ReturnType, @ptrFromInt(usize_value));
-                    },
-                    else => @compileError(value_type_error),
-                }
-            },
-            else => target_type_error,
-        },
-        .Optional => |target_type_info| switch (@typeInfo(target_type_info.child)) {
-            .Pointer => return typedConst2_0_13(ReturnType, target_type_info.child, value),
-            else => target_type_error,
-        },
-        .Enum => |_| switch (@typeInfo(@TypeOf(value))) {
-            .Int => return @as(ReturnType, @enumFromInt(value)),
-            else => target_type_error,
-        },
-        else => @compileError(target_type_error),
-    }
+    _ = .{ ReturnType, SwitchType, value };
+    @compileError("typedConst2_0_13 is not supported in Zig 0.16+");
 }
 test "typedConst" {
     try testing.expectEqual(@as(usize, @bitCast(@as(isize, -1))), @intFromPtr(typedConst(?*opaque {}, -1)));

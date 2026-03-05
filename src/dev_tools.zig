@@ -3,10 +3,12 @@ const std = @import("std");
 const internal = @import("internal.zig");
 const trait = @import("trait.zig");
 
+const net = std.Io.net;
+
 const DEV_TOOLS_PORT = 42671;
 const log = std.log.scoped(.dev_tools);
 
-var server: std.net.Server = undefined;
+var server: net.Server = undefined;
 var serverThread: ?std.Thread = null;
 
 var run_server = true;
@@ -61,8 +63,8 @@ pub fn init() !void {
     if (@import("builtin").single_threaded) {
         return;
     }
-    const addr = try std.net.Address.parseIp("127.0.0.1", DEV_TOOLS_PORT);
-    if (addr.listen(.{})) |addr_server| {
+    const addr = try net.IpAddress.parse("127.0.0.1", DEV_TOOLS_PORT);
+    if (addr.listen(internal.io, .{})) |addr_server| {
         server = addr_server;
         serverThread = try std.Thread.spawn(.{}, serverRunner, .{});
         log.debug("Server opened at {any}", .{addr});
@@ -150,10 +152,7 @@ fn writeRequest(writer: *std.Io.Writer, request: Request) !void {
     }
 }
 
-fn connectionRunner(connection: std.net.Server.Connection) !void {
-    log.debug("accepted connection from {any}", .{connection.address});
-    const stream = connection.stream;
-
+fn connectionRunner(stream: net.Stream) !void {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
     var net_reader = stream.reader(&read_buf);
@@ -184,9 +183,9 @@ fn connectionRunner(connection: std.net.Server.Connection) !void {
 
 fn serverRunner() !void {
     while (run_server) {
-        const connection = try server.accept();
+        const stream = try server.accept(internal.io);
 
-        var connectionThread = try std.Thread.spawn(.{}, connectionRunner, .{connection});
+        var connectionThread = try std.Thread.spawn(.{}, connectionRunner, .{stream});
         connectionThread.join(); // TODO: multiple connections
     }
 }
@@ -196,5 +195,5 @@ pub fn deinit() void {
     if (serverThread) |thread| {
         thread.join();
     }
-    server.deinit();
+    server.deinit(internal.io);
 }

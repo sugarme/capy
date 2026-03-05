@@ -4,11 +4,12 @@ const internal = @import("internal.zig");
 const OutputTarget = enum { disabled, stdout, stderr, file };
 
 var target: OutputTarget = .disabled;
-var file_handle: ?std.fs.File = null;
-var mutex: std.Thread.Mutex = .{};
+var file_handle: ?std.Io.File = null;
+var mutex: std.Io.Mutex = std.Io.Mutex.init;
 
 pub fn init() void {
-    const env_val = std.process.getEnvVarOwned(internal.allocator, "CAPY_UI_STATE_CHANGES_TO") catch return;
+    const environ: std.process.Environ = .{ .block = .{ .use_global = true } };
+    const env_val = environ.getAlloc(internal.allocator, "CAPY_UI_STATE_CHANGES_TO") catch return;
     defer internal.allocator.free(env_val);
 
     if (std.mem.eql(u8, env_val, "@stdout")) {
@@ -16,7 +17,7 @@ pub fn init() void {
     } else if (std.mem.eql(u8, env_val, "@stderr")) {
         target = .stderr;
     } else {
-        file_handle = std.fs.cwd().createFile(env_val, .{}) catch |err| {
+        file_handle = std.Io.Dir.cwd().createFile(internal.io, env_val, .{}) catch |err| {
             std.debug.print("CAPY_UI_STATE_CHANGES_TO: failed to open '{s}': {s}\n", .{ env_val, @errorName(err) });
             return;
         };
@@ -25,7 +26,7 @@ pub fn init() void {
 }
 
 pub fn deinit() void {
-    if (file_handle) |fh| fh.close();
+    if (file_handle) |fh| fh.close(internal.io);
     file_handle = null;
     target = .disabled;
 }
@@ -42,8 +43,8 @@ pub fn logPropertyChange(
     new_value_str: []const u8,
 ) void {
     if (target == .disabled) return;
-    mutex.lock();
-    defer mutex.unlock();
+    mutex.lockUncancelable(internal.io);
+    defer mutex.unlock(internal.io);
 
     const file = getFile() orelse return;
 
@@ -60,14 +61,14 @@ pub fn logPropertyChange(
         new_value_str,
     }) catch return;
 
-    file.writeAll(line) catch {};
+    file.writeStreamingAll(internal.io, line) catch {};
 }
 
-fn getFile() ?std.fs.File {
+fn getFile() ?std.Io.File {
     return switch (target) {
         .disabled => null,
-        .stdout => std.fs.File.stdout(),
-        .stderr => std.fs.File.stderr(),
+        .stdout => std.Io.File.stdout(),
+        .stderr => std.Io.File.stderr(),
         .file => file_handle,
     };
 }

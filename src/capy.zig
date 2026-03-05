@@ -1,5 +1,29 @@
 const std = @import("std");
 
+/// Compat replacement for std.BoundedArray which was removed in Zig 0.16.
+fn BoundedArray(comptime T: type, comptime capacity: usize) type {
+    return struct {
+        buffer: [capacity]T = undefined,
+        len: usize = 0,
+
+        const Self = @This();
+
+        pub fn init(_: usize) error{Overflow}!Self {
+            return Self{};
+        }
+
+        pub fn append(self: *Self, item: T) error{Overflow}!void {
+            if (self.len >= capacity) return error.Overflow;
+            self.buffer[self.len] = item;
+            self.len += 1;
+        }
+
+        pub fn constSlice(self: *const Self) []const T {
+            return self.buffer[0..self.len];
+        }
+    };
+}
+
 pub const Window = @import("window.zig").Window;
 pub const Widget = @import("widget.zig").Widget;
 
@@ -260,7 +284,7 @@ fn animateAtoms(_: ?*anyopaque) void {
     defer data._animatedAtomsMutex.unlock();
 
     // List of atoms that are no longer animated and that need to be removed from the list
-    var toRemove = std.BoundedArray(usize, 64).init(0) catch unreachable;
+    var toRemove = BoundedArray(usize, 64).init(0) catch unreachable;
     for (data._animatedAtoms.items, 0..) |item, i| {
         if (item.fnPtr(item.userdata) == false) { // animation ended
             toRemove.append(i) catch |err| switch (err) {

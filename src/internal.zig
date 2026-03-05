@@ -33,6 +33,10 @@ const default_allocator = blk: {
 /// You can change this by setting the `capy_allocator` field in your main file.
 pub const allocator = if (@hasDecl(root, "capy_allocator")) root.capy_allocator else default_allocator;
 
+/// Global Io handle for runtime use (mutex/rwlock/clock operations).
+/// Uses the debug_io singleton which doesn't require coroutine infrastructure.
+pub const io = std.Options.debug_io;
+
 /// Convenience function for creating widgets
 pub fn All(comptime T: type) type {
     const E = Events(T);
@@ -432,66 +436,81 @@ pub fn GenerateConfigStruct(comptime T: type) type {
     // TODO: .onclick = &.{ handlerOne, handlerTwo }, for other event handlers
     comptime {
         @setEvalBranchQuota(10000);
-        var config_fields: []const std.builtin.Type.StructField = &.{};
-        iterateFields(&config_fields, T);
+        // First pass: count the number of config fields
+        const base_count = countConfigFields(T);
+        const total_count = base_count + 2; // +2 for onclick and ondraw
+
+        // Second pass: fill the arrays
+        var field_names: [total_count][]const u8 = undefined;
+        var field_types: [total_count]type = undefined;
+        var field_attrs: [total_count]std.builtin.Type.StructField.Attributes = undefined;
+        var idx: usize = 0;
+        fillConfigFields(T, &field_names, &field_types, &field_attrs, &idx);
 
         const default_value: ?T.Callback = null;
         const default_draw_value: ?T.DrawCallback = null;
-        config_fields = config_fields ++ &[1]std.builtin.Type.StructField{.{
-            .name = "onclick",
-            .type = ?T.Callback,
-            .default_value_ptr = @as(?*const anyopaque, @ptrCast(&default_value)),
-            .is_comptime = false,
-            .alignment = @alignOf(?T.Callback),
-        }};
-        config_fields = config_fields ++ &[1]std.builtin.Type.StructField{.{
-            .name = "ondraw",
-            .type = ?T.DrawCallback,
-            .default_value_ptr = @as(?*const anyopaque, @ptrCast(&default_draw_value)),
-            .is_comptime = false,
-            .alignment = @alignOf(?T.DrawCallback),
-        }};
 
-        const t = @Type(.{ .@"struct" = .{
-            .layout = .auto,
-            .backing_integer = null,
-            .fields = config_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        } });
-        return t;
+        field_names[idx] = "onclick";
+        field_types[idx] = ?T.Callback;
+        field_attrs[idx] = .{ .default_value_ptr = @as(?*const anyopaque, @ptrCast(&default_value)) };
+        idx += 1;
+
+        field_names[idx] = "ondraw";
+        field_types[idx] = ?T.DrawCallback;
+        field_attrs[idx] = .{ .default_value_ptr = @as(?*const anyopaque, @ptrCast(&default_draw_value)) };
+        idx += 1;
+
+        return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
     }
 }
 
-fn iterateFields(comptime config_fields: *[]const std.builtin.Type.StructField, comptime T: type) void {
+fn countConfigFields(comptime T: type) usize {
+    @setEvalBranchQuota(100000);
+    var count: usize = 0;
+    for (std.meta.fields(T)) |field| {
+        const FieldType = field.type;
+        if (dataStructures.isAtom(FieldType)) {
+            count += 1;
+        } else if (dataStructures.isListAtom(FieldType)) {
+            count += 1;
+        } else if (comptime trait.is(.@"struct")(FieldType)) {
+            count += countConfigFields(FieldType);
+        }
+    }
+    return count;
+}
+
+fn fillConfigFields(
+    comptime T: type,
+    comptime field_names: anytype,
+    comptime field_types: anytype,
+    comptime field_attrs: anytype,
+    comptime idx: *usize,
+) void {
     for (std.meta.fields(T)) |field| {
         const FieldType = field.type;
         if (dataStructures.isAtom(FieldType)) {
             const default_value = if (field.defaultValue()) |default| default.getUnsafe() else null;
             const has_default_value = field.defaultValue() != null;
 
-            config_fields.* = config_fields.* ++ &[1]std.builtin.Type.StructField{.{
-                .name = field.name,
-                .type = FieldType.ValueType,
+            field_names[idx.*] = field.name;
+            field_types[idx.*] = FieldType.ValueType;
+            field_attrs[idx.*] = .{
                 .default_value_ptr = if (has_default_value) @as(?*const anyopaque, @ptrCast(@alignCast(&default_value))) else null,
-                .is_comptime = false,
-                .alignment = @alignOf(FieldType.ValueType),
-            }};
+            };
+            idx.* += 1;
         } else if (dataStructures.isListAtom(FieldType)) {
-            // const default_value = if (field.default_value) |default| @as(*const FieldType, @ptrCast(@alignCast(default))).getUnsafe() else null;
-            const default_value = null;
-            // const has_default_value = field.default_value != null;
+            const default_value: ?[]const FieldType.ValueType = null;
             const has_default_value = false;
 
-            config_fields.* = config_fields.* ++ &[1]std.builtin.Type.StructField{.{
-                .name = field.name,
-                .type = []const FieldType.ValueType,
+            field_names[idx.*] = field.name;
+            field_types[idx.*] = []const FieldType.ValueType;
+            field_attrs[idx.*] = .{
                 .default_value_ptr = if (has_default_value) @as(?*const anyopaque, @ptrCast(@alignCast(&default_value))) else null,
-                .is_comptime = false,
-                .alignment = @alignOf(FieldType.ValueType),
-            }};
+            };
+            idx.* += 1;
         } else if (comptime trait.is(.@"struct")(FieldType)) {
-            iterateFields(config_fields, FieldType);
+            fillConfigFields(FieldType, field_names, field_types, field_attrs, idx);
         }
     }
 }
@@ -687,23 +706,12 @@ pub fn Events(comptime T: type) type {
 
         fn errorHandler(err: anyerror) callconv(.auto) void {
             std.log.err("{s}", .{@errorName(err)});
-            var streamBuf: [16384]u8 = undefined;
-            var stream = std.io.fixedBufferStream(&streamBuf);
-            var writer = stream.writer();
-            writer.print("Internal error: {s}.\n", .{@errorName(err)}) catch {};
             if (@errorReturnTrace()) |trace| {
-                std.debug.dumpStackTrace(trace.*);
-                if (@import("builtin").target.cpu.arch.isWasm()) {
-                    // can't use writeStackTrace as it is async but errorHandler should not be async!
-                    // also can't use writeStackTrace when using WebAssembly
-                } else {
-                    // TODO: writeStackTrace API changed in 0.15.2 (requires *std.io.Writer)
-                    // For now, just dump the basic trace info via std.debug
-                    std.debug.dumpStackTrace(trace.*);
-                }
+                std.debug.dumpStackTrace(trace);
             }
-            writer.print("Please check the log.", .{}) catch {};
-            backend.showNativeMessageDialog(.Error, "{s}", .{stream.getWritten()});
+            var buf: [16384]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Internal error: {s}.\nPlease check the log.", .{@errorName(err)}) catch "Internal error";
+            backend.showNativeMessageDialog(.Error, "{s}", .{msg});
         }
 
         fn clickHandler(data: usize) void {

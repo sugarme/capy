@@ -31,15 +31,15 @@ const stub_stories = [_]Story{
 var stories: [max_stories]Story = undefined;
 var story_count: usize = 0;
 var fetch_done = std.atomic.Value(bool).init(false);
-var fetch_mutex: std.Thread.Mutex = .{};
+var fetch_mutex: std.Io.Mutex = std.Io.Mutex.init;
 
 const ListModel = struct {
     size: capy.Atom(usize) = capy.Atom(usize).of(0),
     arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(capy.internal.allocator),
 
     pub fn getComponent(self: *ListModel, index: usize) *capy.Label {
-        fetch_mutex.lock();
-        defer fetch_mutex.unlock();
+        fetch_mutex.lockUncancelable(capy.internal.io);
+        defer fetch_mutex.unlock(capy.internal.io);
         if (index < story_count) {
             const story = stories[index];
             return capy.label(.{
@@ -65,7 +65,7 @@ const ListModel = struct {
 fn fetchStories() void {
     const persistent = capy.internal.allocator;
 
-    var client: std.http.Client = .{ .allocator = persistent };
+    var client: std.http.Client = .{ .allocator = persistent, .io = capy.internal.io };
     defer client.deinit();
 
     // Fetch top story IDs
@@ -151,12 +151,12 @@ fn fetchStories() void {
 
     if (fetched > 0) {
         // Atomically swap stories under mutex
-        fetch_mutex.lock();
+        fetch_mutex.lockUncancelable(capy.internal.io);
         for (temp_stories[0..fetched], 0..) |s, i| {
             stories[i] = s;
         }
         story_count = fetched;
-        fetch_mutex.unlock();
+        fetch_mutex.unlock(capy.internal.io);
     }
 
     fetch_done.store(true, .release);
@@ -202,9 +202,9 @@ pub fn main() !void {
     while (capy.stepEventLoop(.Blocking)) {
         if (fetch_done.load(.acquire)) {
             fetch_done.store(false, .release);
-            fetch_mutex.lock();
+            fetch_mutex.lockUncancelable(capy.internal.io);
             const count = story_count;
-            fetch_mutex.unlock();
+            fetch_mutex.unlock(capy.internal.io);
             hn_list_model.size.set(count);
         }
     }

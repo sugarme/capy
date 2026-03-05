@@ -110,8 +110,9 @@ pub const Window = struct {
     /// On certain platforms (e.g. mobile) or configurations (e.g. tiling window manager) this function might do nothing.
     pub fn setPreferredSize(self: *Window, width: u32, height: u32) void {
         const EMULATOR_KEY = "CAPY_MOBILE_EMULATED";
-        if (std.process.hasEnvVar(internal.allocator, EMULATOR_KEY) catch return) {
-            const id = std.process.getEnvVarOwned(internal.allocator, EMULATOR_KEY) catch @panic("OOM");
+        const environ: std.process.Environ = .{ .block = .{ .use_global = true } };
+        if (environ.contains(internal.allocator, EMULATOR_KEY) catch return) {
+            const id = environ.getAlloc(internal.allocator, EMULATOR_KEY) catch @panic("OOM");
             defer internal.allocator.free(id);
             if (devices.get(id)) |device| {
                 self.peer.resize(@as(c_int, @intFromFloat(device.resolution.width)), @as(c_int, @intFromFloat(device.resolution.height)));

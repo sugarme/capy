@@ -1,6 +1,5 @@
 const std = @import("std");
 const AndroidSdk = @import("android/Sdk.zig");
-const Server = std.http.Server;
 
 pub const CapyBuildOptions = struct {
     // Build related
@@ -94,6 +93,7 @@ pub fn generateInfoPlist(allocator: std.mem.Allocator, app_name: []const u8, exe
 }
 
 /// Step used to run a web server for WebAssembly apps
+/// TODO: Port to Zig 0.16 std.Io networking API
 const WebServerStep = struct {
     step: std.Build.Step,
     exe: *std.Build.Step.Compile,
@@ -114,105 +114,10 @@ const WebServerStep = struct {
         return self;
     }
 
-    const Context = struct {
-        exe: *std.Build.Step.Compile,
-        builder: *std.Build,
-    };
-
     pub fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) !void {
         _ = options;
-
-        const self: *WebServerStep = @fieldParentPtr("step", step);
-
-        const address = std.net.Address.parseIp("::1", 8080) catch unreachable;
-        var net_server = try address.listen(.{ .reuse_address = true });
-
-        std.debug.print("Web server opened at http://localhost:8080/\n", .{});
-
-        while (true) {
-            const conn = try net_server.accept();
-            const thread = try std.Thread.spawn(.{}, handler, .{ self, step.owner, conn });
-            thread.detach();
-        }
-    }
-
-    fn handler(self: *WebServerStep, build: *std.Build, conn: std.net.Server.Connection) void {
-        defer conn.stream.close();
-
-        const allocator = build.allocator;
-        var read_buf: [8192]u8 = undefined;
-        var write_buf: [8192]u8 = undefined;
-        var stream_reader = conn.stream.reader(&read_buf);
-        var stream_writer = conn.stream.writer(&write_buf);
-        var server = Server.init(stream_reader.interface(), &stream_writer.interface);
-
-        var req = server.receiveHead() catch return;
-
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const req_allocator = arena.allocator();
-
-        const path = req.head.target;
-        var file_path: []const u8 = "";
-        var file_content: ?[]const u8 = null;
-        var content_type: []const u8 = "text/html";
-        if (std.mem.eql(u8, path, "/")) {
-            file_content = @embedFile("src/backends/wasm/index.html");
-            content_type = "text/html";
-        } else if (std.mem.eql(u8, path, "/capy.js")) {
-            file_content = @embedFile("src/backends/wasm/capy.js");
-            content_type = "application/javascript";
-        } else if (std.mem.eql(u8, path, "/capy-worker.js")) {
-            file_content = @embedFile("src/backends/wasm/capy-worker.js");
-            content_type = "application/javascript";
-        } else if (std.mem.eql(u8, path, "/zig-app.wasm")) {
-            file_path = self.exe.getEmittedBin().getPath2(build, &self.step);
-            content_type = "application/wasm";
-        } else if (std.mem.eql(u8, path, "/extras.js")) {
-            if (self.options.wasm_extras_js_file) |extras_path| {
-                file_path = extras_path;
-                content_type = "application/javascript";
-            }
-        } else {
-            file_path = std.fs.path.join(req_allocator, &.{ "html", path }) catch return;
-            content_type = "application/javascript";
-        }
-
-        if (self.options.wasm_debug_requests) {
-            std.log.debug("{s} -> {s}", .{ path, file_path });
-        }
-
-        var status: std.http.Status = .ok;
-        const content = blk: {
-            if (file_content) |presupplied_content| {
-                break :blk presupplied_content;
-            } else {
-                const file: ?std.fs.File = std.fs.cwd().openFile(file_path, .{}) catch |err| blk2: {
-                    switch (err) {
-                        error.FileNotFound => break :blk2 null,
-                        else => return,
-                    }
-                };
-                if (file) |f| {
-                    defer f.close();
-                    break :blk f.readToEndAlloc(req_allocator, std.math.maxInt(usize)) catch return;
-                } else {
-                    status = .not_found;
-                    break :blk "404 Not Found";
-                }
-            }
-        };
-
-        req.respond(content, .{
-            .status = status,
-            .keep_alive = false,
-            .extra_headers = &.{
-                .{ .name = "Connection", .value = "close" },
-                .{ .name = "Content-Type", .value = content_type },
-                .{ .name = "Cross-Origin-Opener-Policy", .value = "same-origin" },
-                .{ .name = "Cross-Origin-Embedder-Policy", .value = "require-corp" },
-            },
-        }) catch return;
+        _ = step;
+        @panic("WASM web server not yet ported to Zig 0.16 networking API");
     }
 };
 
@@ -342,9 +247,8 @@ pub fn runStep(step: *std.Build.Step.Compile, options: CapyRunOptions) !*std.Bui
 }
 
 comptime {
-    const supported_zig = std.SemanticVersion.parse("0.15.2") catch unreachable;
     const zig_version = @import("builtin").zig_version;
-    if (zig_version.order(supported_zig) != .eq) {
-        @compileError(std.fmt.comptimePrint("unsupported Zig version ({}). Zig 0.15.2 is required.", .{@import("builtin").zig_version}));
+    if (zig_version.major != 0 or zig_version.minor != 16) {
+        @compileError(std.fmt.comptimePrint("unsupported Zig version ({}). Zig 0.16.x is required.", .{@import("builtin").zig_version}));
     }
 }

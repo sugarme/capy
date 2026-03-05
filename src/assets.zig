@@ -5,15 +5,18 @@ const internal = @import("internal.zig");
 const log = std.log.scoped(.assets);
 const Uri = std.Uri;
 
+const Dir = std.Io.Dir;
+const File = std.Io.File;
+
 const GetError = Uri.ParseError || http.SendRequestError || error{ UnsupportedScheme, InvalidPath } || std.mem.Allocator.Error;
 
 pub const AssetHandle = struct {
     data: union(enum) {
         http: http.HttpResponse,
-        file: std.fs.File,
+        file: File,
     },
 
-    pub const ReadError = http.HttpResponse.ReadError || std.fs.File.ReadError;
+    pub const ReadError = File.ReadStreamingError || http.HttpResponse.ReadError;
 
     pub fn read(self: *AssetHandle, dest: []u8) ReadError!usize {
         switch (self.data) {
@@ -21,16 +24,24 @@ pub const AssetHandle = struct {
                 return try resp.read(dest);
             },
             .file => |file| {
-                return try file.read(dest);
+                return file.readStreaming(internal.io, &.{dest});
             },
         }
     }
 
     /// Read all contents into an allocated buffer
     pub fn readAllAlloc(self: *AssetHandle, alloc: std.mem.Allocator, max_size: usize) ![]u8 {
+        _ = max_size;
         switch (self.data) {
-            .file => |file| {
-                return try file.readToEndAlloc(alloc, max_size);
+            .file => {
+                var result = std.ArrayList(u8).empty;
+                var buf: [4096]u8 = undefined;
+                while (true) {
+                    const n = try self.read(&buf);
+                    if (n == 0) break;
+                    try result.appendSlice(alloc, buf[0..n]);
+                }
+                return result.toOwnedSlice(alloc);
             },
             .http => {
                 var result = std.ArrayList(u8).empty;
@@ -51,7 +62,7 @@ pub const AssetHandle = struct {
                 resp.deinit();
             },
             .file => |file| {
-                file.close();
+                file.close(internal.io);
             },
         }
     }
@@ -67,24 +78,21 @@ pub fn get(url: []const u8) GetError!AssetHandle {
     log.debug("Loading {s}", .{url});
 
     if (std.mem.eql(u8, uri.scheme, "asset")) {
-        var buffer: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd_path = try std.fs.realpath(".", &buffer);
-
-        var raw_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var raw_path_buf: [Dir.max_path_bytes]u8 = undefined;
         const raw_uri_path = uri.path.toRaw(&raw_path_buf) catch return error.InvalidPath;
 
-        const asset_path = try std.fs.path.join(internal.allocator, &.{ cwd_path, "assets/", raw_uri_path });
+        const asset_path = try std.fs.path.join(internal.allocator, &.{ "assets/", raw_uri_path });
         defer internal.allocator.free(asset_path);
         log.debug("-> {s}", .{asset_path});
 
-        const file = try std.fs.openFileAbsolute(asset_path, .{ .mode = .read_only });
+        const file = Dir.cwd().openFile(internal.io, asset_path, .{ .mode = .read_only }) catch return error.InvalidPath;
         return AssetHandle{ .data = .{ .file = file } };
     } else if (std.mem.eql(u8, uri.scheme, "file")) {
-        var raw_path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+        var raw_path_buf2: [Dir.max_path_bytes]u8 = undefined;
         const raw_uri_path = uri.path.toRaw(&raw_path_buf2) catch return error.InvalidPath;
 
         log.debug("-> {s}", .{raw_uri_path});
-        const file = try std.fs.openFileAbsolute(raw_uri_path, .{ .mode = .read_only });
+        const file = Dir.openFileAbsolute(internal.io, raw_uri_path, .{ .mode = .read_only }) catch return error.InvalidPath;
         return AssetHandle{ .data = .{ .file = file } };
     } else if (std.mem.eql(u8, uri.scheme, "http") or std.mem.eql(u8, uri.scheme, "https")) {
         const request = http.HttpRequest.get(url);
@@ -125,8 +133,8 @@ test "triple-slash URI normalization" {
     // After normalization, "asset:///ziglogo.png" -> "asset:/ziglogo.png"
     try std.testing.expectEqualStrings("asset:/ziglogo.png", normalized);
     // Verify it parses as a valid URI
-    const uri = try Uri.parse(normalized);
-    try std.testing.expectEqualStrings("asset", uri.scheme);
+    const parsed_uri = try Uri.parse(normalized);
+    try std.testing.expectEqualStrings("asset", parsed_uri.scheme);
 }
 
 test "unsupported scheme returns error" {

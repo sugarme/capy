@@ -25,7 +25,11 @@ pub fn timerInvoke(data: ?*anyopaque, jni: *android.JNI, method: android.jobject
     std.log.info("Running invoke!", .{});
     const method_name = try android.JNI.String.init(jni, try jni.callObjectMethod(method, "getName", "()Ljava/lang/String;", .{}));
     defer method_name.deinit(jni);
-    std.log.info("Method {}", .{std.unicode.fmtUtf16le(method_name.slice)});
+    {
+        var utf8_buf: [256]u8 = undefined;
+        const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, method_name.slice) catch 0;
+        std.log.info("Method {s}", .{utf8_buf[0..utf8_len]});
+    }
 
     const length = try jni.invokeJni(.GetArrayLength, .{args});
     var i: i32 = 0;
@@ -33,7 +37,11 @@ pub fn timerInvoke(data: ?*anyopaque, jni: *android.JNI, method: android.jobject
         const object = try jni.invokeJni(.GetObjectArrayElement, .{ args, i });
         const string = try android.JNI.String.init(jni, try jni.callObjectMethod(object, "toString", "()Ljava/lang/String;", .{}));
         defer string.deinit(jni);
-        std.log.info("Arg {}: {}", .{ i, std.unicode.fmtUtf16le(string.slice) });
+        {
+            var utf8_buf: [256]u8 = undefined;
+            const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, string.slice) catch 0;
+            std.log.info("Arg {}: {s}", .{ i, utf8_buf[0..utf8_len] });
+        }
 
         if (i == 0) {
             const Button = try jni.findClass("android/widget/Button");
@@ -61,7 +69,7 @@ pub const AndroidApp = struct {
 
     // This is needed because to run a callback on the UI thread Looper you must
     // react to a fd change, so we use a pipe to force it
-    pipe: [2]std.os.fd_t = undefined,
+    pipe: [2]std.os.linux.fd_t = undefined,
     // This is used with futexes so that runOnUiThread waits until the callback is completed
     // before returning.
     uiThreadCondition: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
@@ -83,7 +91,12 @@ pub const AndroidApp = struct {
         // Initialize the variables we need to execute functions on the UI thread
         self.uiThreadLooper = android.ALooper_forThread().?;
         self.uiThreadId = std.Thread.getCurrentId();
-        self.pipe = try std.os.pipe();
+        {
+            var fds: [2]i32 = undefined;
+            const rc = std.os.linux.pipe(&fds);
+            if (std.os.linux.errno(rc) != .SUCCESS) return error.PipeError;
+            self.pipe = fds;
+        }
         android.ALooper_acquire(self.uiThreadLooper);
 
         var native_activity = android.NativeActivity.init(self.activity);
@@ -130,7 +143,12 @@ pub const AndroidApp = struct {
                 defer self_ptr.allocator.destroy(data_struct);
 
                 @call(.auto, func, data_struct.args);
-                std.Thread.Futex.wake(&self_ptr.uiThreadCondition, 1);
+                // Use raw Linux futex syscall (std.Thread.Futex removed in Zig 0.16)
+                _ = std.os.linux.futex_3arg(
+                    @ptrCast(&self_ptr.uiThreadCondition.raw),
+                    .{ .cmd = .WAKE, .private = true },
+                    1,
+                );
                 return 0;
             }
         };
@@ -143,12 +161,22 @@ pub const AndroidApp = struct {
             Instance.callback,
             data_ptr,
         );
-        std.debug.assert(try std.os.write(self.pipe[1], "hello") == 5);
+        {
+            const msg: [*]const u8 = "hello";
+            const rc = std.os.linux.write(self.pipe[1], msg, 5);
+            std.debug.assert(rc == 5);
+        }
         if (result == -1) {
             return error.LooperError;
         }
 
-        std.Thread.Futex.wait(&self.uiThreadCondition, 0);
+        // Use raw Linux futex syscall (std.Thread.Futex removed in Zig 0.16)
+        _ = std.os.linux.futex_4arg(
+            @ptrCast(&self.uiThreadCondition.raw),
+            .{ .cmd = .WAIT, .private = true },
+            0,
+            null,
+        );
     }
 
     pub fn getJni(self: *AndroidApp) JNI {
@@ -200,7 +228,7 @@ pub const AndroidApp = struct {
 
         try self.runOnUiThread(setAppContentView, .{self});
         while (self.running) {
-            std.time.sleep(1 * std.time.ns_per_s);
+            _ = std.os.linux.nanosleep(&.{ .sec = 1, .nsec = 0 }, null);
         }
     }
 

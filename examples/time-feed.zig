@@ -52,8 +52,8 @@ var list_model: ListModel = undefined;
 
 fn onSubmit(_: *anyopaque) !void {
     try list_model.add(.{
-        .start = @as(u64, @intCast(std.time.timestamp() - 1000)),
-        .end = @as(u64, @intCast(std.time.timestamp())),
+        .start = @as(u64, @intCast(std.Io.Timestamp.now(capy.internal.io, .real).toSeconds() - 1000)),
+        .end = @as(u64, @intCast(std.Io.Timestamp.now(capy.internal.io, .real).toSeconds())),
         .description = try capy.internal.allocator.dupe(u8, submitDesc.get()),
     });
 

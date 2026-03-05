@@ -1,7 +1,7 @@
 const std = @import("std");
 const log = std.log.scoped(.egl);
 
-pub const c = @import("c.zig");
+pub const c = @import("c.zig")._c;
 
 const android = @import("android-support.zig");
 

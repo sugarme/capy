@@ -30,7 +30,7 @@ pub fn main() !void {
     defer balls.deinit(capy.internal.allocator);
 
     // Generate random balls
-    var prng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.time.milliTimestamp())));
+    var prng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.Io.Timestamp.now(capy.internal.io, .real).toMilliseconds())));
     const random = prng.random();
     var i: usize = 0;
     while (i < 100) : (i += 1) {
@@ -225,6 +225,6 @@ fn simulationThread(window: *capy.Window) !void {
         totalEnergy.set(total);
 
         try canvas.requestDraw();
-        std.Thread.sleep(16 * std.time.ns_per_ms);
+        std.Io.sleep(capy.internal.io, std.Io.Duration.fromMilliseconds(16), .awake) catch {};
     }
 }

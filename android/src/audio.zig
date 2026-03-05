@@ -1,7 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
-const android = @import("c.zig");
+const android = @import("c.zig")._c;
 
 const audio_log = std.log.scoped(.audio);
 

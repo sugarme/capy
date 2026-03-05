@@ -7,6 +7,12 @@ const builtin = @import("builtin");
 
 const auto_detect = @import("build/auto-detect.zig");
 
+/// Replacement for std.zig.fmtEscapes which was removed in Zig 0.16.
+/// Returns a formattable value that escapes a string for use in Zig source code.
+fn fmtEscapes(bytes: []const u8) std.fmt.Alt([]const u8, std.zig.stringEscape) {
+    return .{ .data = bytes };
+}
+
 fn sdkRootIntern() []const u8 {
     return std.fs.path.dirname(@src().file) orelse ".";
 }
@@ -66,8 +72,8 @@ pub fn init(b: *Builder, user_config: ?UserConfig, toolchains: ToolchainVersions
         const d8 = std.fs.path.join(b.allocator, &[_][]const u8{ actual_user_config.android_sdk_root, "build-tools", toolchains.build_tools_version, "d8" ++ exe }) catch unreachable;
         const adb = blk1: {
             const adb_sdk = std.fs.path.join(b.allocator, &[_][]const u8{ actual_user_config.android_sdk_root, "platform-tools", "adb" ++ exe }) catch unreachable;
-            if (!auto_detect.fileExists(adb_sdk)) {
-                break :blk1 auto_detect.findProgramPath(b.allocator, "adb") orelse @panic("No adb found");
+            if (!auto_detect.fileExists(b, adb_sdk)) {
+                break :blk1 auto_detect.findProgramPath(b, "adb") orelse @panic("No adb found");
             }
             break :blk1 adb_sdk;
         };
@@ -95,7 +101,7 @@ pub fn init(b: *Builder, user_config: ?UserConfig, toolchains: ToolchainVersions
                 .target = b.resolveTargetQuery(.{}),
             }),
         });
-        zip_add.addCSourceFile(.{
+        zip_add.root_module.addCSourceFile(.{
             .file = b.path(sdkRoot() ++ "/vendor/kuba-zip/zip.c"),
             .flags = &[_][]const u8{
                 "-std=c99",
@@ -103,8 +109,8 @@ pub fn init(b: *Builder, user_config: ?UserConfig, toolchains: ToolchainVersions
                 "-D_POSIX_C_SOURCE=200112L",
             },
         });
-        zip_add.addIncludePath(b.path(sdkRoot() ++ "/vendor/kuba-zip"));
-        zip_add.linkLibC();
+        zip_add.root_module.addIncludePath(b.path(sdkRoot() ++ "/vendor/kuba-zip"));
+        zip_add.root_module.link_libc = true;
 
         break :blk HostTools{
             .zip_add = zip_add,
@@ -315,15 +321,8 @@ pub const CreateAppStep = struct {
 
     package_name: []const u8,
 
-    pub fn getAndroidPackage(self: @This(), name: []const u8) std.Build.Pkg {
-        return self.sdk.b.dupePkg(std.Build.Pkg{
-            .name = name,
-            .source = self.sdk.b.path(sdkRoot() ++ "/src/android-support.zig"),
-            .dependencies = &[_]std.Build.Pkg{
-                self.build_options.getPackage("build_options"),
-            },
-        });
-    }
+    // NOTE: getAndroidPackage was removed because std.Build.Pkg no longer exists in Zig 0.16.
+    // Use the Module system (b.addModule / root_module.addImport) instead.
 
     pub fn install(self: @This()) *Step {
         return self.sdk.installApp(self.apk_file);
@@ -470,18 +469,15 @@ pub fn createApp(
 ) CreateAppStep {
     const write_xml_step = sdk.b.addWriteFiles();
     const write_xml_file_source = write_xml_step.add("strings.xml", blk: {
-        var buf: std.ArrayList(u8) = .empty;
-        errdefer buf.deinit(sdk.b.allocator);
+        var aw: std.Io.Writer.Allocating = .init(sdk.b.allocator);
 
-        var writer = buf.writer(sdk.b.allocator);
-
-        writer.writeAll(
+        aw.writer.writeAll(
             \\<?xml version="1.0" encoding="utf-8"?>
             \\<resources>
             \\
         ) catch unreachable;
 
-        writer.print(
+        aw.writer.print(
             \\    <string name="app_name">{s}</string>
             \\    <string name="lib_name">{s}</string>
             \\    <string name="package_name">{s}</string>
@@ -492,28 +488,25 @@ pub fn createApp(
             app_config.package_name,
         }) catch unreachable;
 
-        writer.writeAll(
+        aw.writer.writeAll(
             \\</resources>
             \\
         ) catch unreachable;
 
-        break :blk buf.toOwnedSlice(sdk.b.allocator) catch unreachable;
+        break :blk aw.toOwnedSlice() catch unreachable;
     });
 
     const manifest_step = sdk.b.addWriteFiles();
     const manifest_file_source = manifest_step.add("AndroidManifest.xml", blk: {
-        var buf: std.ArrayList(u8) = .empty;
-        errdefer buf.deinit(sdk.b.allocator);
-
-        var writer = buf.writer(sdk.b.allocator);
+        var aw: std.Io.Writer.Allocating = .init(sdk.b.allocator);
 
         @setEvalBranchQuota(1_000_000);
-        writer.print(
+        aw.writer.print(
             \\<?xml version="1.0" encoding="utf-8" standalone="no"?><manifest xmlns:tools="http://schemas.android.com/tools" xmlns:android="http://schemas.android.com/apk/res/android" package="{s}">
             \\
         , .{app_config.package_name}) catch unreachable;
         for (app_config.permissions) |perm| {
-            writer.print(
+            aw.writer.print(
                 \\    <uses-permission android:name="{s}"/>
                 \\
             , .{perm}) catch unreachable;
@@ -525,7 +518,7 @@ pub fn createApp(
             \\
             ;
 
-        writer.print(
+        aw.writer.print(
             \\    <application android:debuggable="true" android:hasCode="{[hasCode]}" android:label="@string/app_name" {[theme]s} tools:replace="android:icon,android:theme,android:allowBackup,label" android:icon="@mipmap/icon" >
             \\        <activity android:configChanges="keyboardHidden|orientation" android:name="android.app.NativeActivity">
             \\            <meta-data android:name="android.app.lib_name" android:value="@string/lib_name"/>
@@ -542,7 +535,7 @@ pub fn createApp(
             .theme = theme,
         }) catch unreachable;
 
-        break :blk buf.toOwnedSlice(sdk.b.allocator) catch unreachable;
+        break :blk aw.toOwnedSlice() catch unreachable;
     });
 
     const resource_dir_step = CreateResourceDirectory.create(sdk.b);
@@ -795,18 +788,19 @@ const CreateResourceDirectory = struct {
             try cacher.addFile(res.content);
         }
 
+        const io = self.builder.graph.io;
         const root = try cacher.createAndGetDir();
         for (self.resources.items) |res| {
             if (std.fs.path.dirname(res.path)) |folder| {
-                try root.dir.makePath(folder);
+                try root.dir.createDirPath(io, folder);
             }
 
             const src_path = res.content.getPath(self.builder);
-            try std.fs.Dir.copyFile(
-                std.fs.cwd(),
+            try std.Io.Dir.cwd().copyFile(
                 src_path,
                 root.dir,
                 res.path,
+                io,
                 .{},
             );
         }
@@ -967,27 +961,25 @@ pub fn compileAppLibrary(
 fn createLibCFile(sdk: *const Sdk, version: AndroidVersion, folder_name: []const u8, include_dir: []const u8, sys_include_dir: []const u8, crt_dir: []const u8) !std.Build.LazyPath {
     const fname = sdk.b.fmt("android-{d}-{s}.conf", .{ @intFromEnum(version), folder_name });
 
-    var contents: std.ArrayList(u8) = .empty;
-    errdefer contents.deinit(sdk.b.allocator);
-
-    var writer = contents.writer(sdk.b.allocator);
+    var aw: std.Io.Writer.Allocating = .init(sdk.b.allocator);
+    errdefer aw.deinit();
 
     //  The directory that contains `stdlib.h`.
     //  On POSIX-like systems, include directories be found with: `cc -E -Wp,-v -xc /dev/null
-    try writer.print("include_dir={s}\n", .{include_dir});
+    try aw.writer.print("include_dir={s}\n", .{include_dir});
 
     // The system-specific include directory. May be the same as `include_dir`.
     // On Windows it's the directory that includes `vcruntime.h`.
     // On POSIX it's the directory that includes `sys/errno.h`.
-    try writer.print("sys_include_dir={s}\n", .{sys_include_dir});
+    try aw.writer.print("sys_include_dir={s}\n", .{sys_include_dir});
 
-    try writer.print("crt_dir={s}\n", .{crt_dir});
-    try writer.writeAll("msvc_lib_dir=\n");
-    try writer.writeAll("kernel32_lib_dir=\n");
-    try writer.writeAll("gcc_dir=\n");
+    try aw.writer.print("crt_dir={s}\n", .{crt_dir});
+    try aw.writer.writeAll("msvc_lib_dir=\n");
+    try aw.writer.writeAll("kernel32_lib_dir=\n");
+    try aw.writer.writeAll("gcc_dir=\n");
 
     const step = sdk.b.addWriteFiles();
-    const file_source = step.add(fname, contents.items);
+    const file_source = step.add(fname, aw.written());
     return file_source;
 }
 
@@ -1066,7 +1058,7 @@ pub const KeyConfig = struct {
 /// A build step that initializes a new key store from the given configuration.
 /// `android_config.key_store` must be non-`null` as it is used to initialize the key store.
 pub fn initKeystore(sdk: Sdk, key_store: KeyStore, key_config: KeyConfig) *Step {
-    if (auto_detect.fileExists(key_store.file)) {
+    if (auto_detect.fileExists(sdk.b, key_store.file)) {
         std.log.warn("keystore already exists: {s}", .{key_store.file});
         return sdk.b.step("init_keystore_noop", "Do nothing, since key exists");
     } else {
@@ -1140,7 +1132,7 @@ const BuildOptionStep = struct {
 
     step: Step,
     builder: *std.Build,
-    file_content: std.ArrayList(u8),
+    file_content: std.Io.Writer.Allocating,
     package_file: std.Build.GeneratedFile,
 
     pub fn create(b: *Builder) *Self {
@@ -1154,7 +1146,7 @@ const BuildOptionStep = struct {
                 .owner = b,
                 .makeFn = make,
             }),
-            .file_content = .empty,
+            .file_content = .init(b.allocator),
             .package_file = std.Build.GeneratedFile{ .step = &options.step },
         };
         const build_options = b.addModule("build_options", .{
@@ -1169,45 +1161,41 @@ const BuildOptionStep = struct {
         return self.builder.modules.get("build_options") orelse unreachable;
     }
 
-    pub fn getPackage(self: *Self, name: []const u8) std.Build.Pkg {
-        return self.builder.dupePkg(std.Build.Pkg{
-            .name = name,
-            .source = .{ .generated = &self.package_file },
-        });
-    }
+    // NOTE: getPackage was removed because std.Build.Pkg no longer exists in Zig 0.16.
+    // Use getModule() instead.
 
     pub fn add(self: *Self, comptime T: type, name: []const u8, value: T) void {
-        const out = self.file_content.writer(self.builder.allocator);
+        const out = &self.file_content.writer;
         switch (T) {
             []const []const u8 => {
-                out.print("pub const {}: []const []const u8 = &[_][]const u8{{\n", .{std.zig.fmtId(name)}) catch unreachable;
+                out.print("pub const {f}: []const []const u8 = &[_][]const u8{{\n", .{std.zig.fmtId(name)}) catch unreachable;
                 for (value) |slice| {
-                    out.print("    \"{}\",\n", .{std.zig.fmtEscapes(slice)}) catch unreachable;
+                    out.print("    \"{f}\",\n", .{fmtEscapes(slice)}) catch unreachable;
                 }
                 out.writeAll("};\n") catch unreachable;
                 return;
             },
             [:0]const u8 => {
-                out.print("pub const {}: [:0]const u8 = \"{}\";\n", .{ std.zig.fmtId(name), std.zig.fmtEscapes(value) }) catch unreachable;
+                out.print("pub const {f}: [:0]const u8 = \"{f}\";\n", .{ std.zig.fmtId(name), fmtEscapes(value) }) catch unreachable;
                 return;
             },
             []const u8 => {
-                out.print("pub const {}: []const u8 = \"{}\";\n", .{ std.zig.fmtId(name), std.zig.fmtEscapes(value) }) catch unreachable;
+                out.print("pub const {f}: []const u8 = \"{f}\";\n", .{ std.zig.fmtId(name), fmtEscapes(value) }) catch unreachable;
                 return;
             },
             ?[:0]const u8 => {
-                out.print("pub const {}: ?[:0]const u8 = ", .{std.zig.fmtId(name)}) catch unreachable;
+                out.print("pub const {f}: ?[:0]const u8 = ", .{std.zig.fmtId(name)}) catch unreachable;
                 if (value) |payload| {
-                    out.print("\"{}\";\n", .{std.zig.fmtEscapes(payload)}) catch unreachable;
+                    out.print("\"{f}\";\n", .{fmtEscapes(payload)}) catch unreachable;
                 } else {
                     out.writeAll("null;\n") catch unreachable;
                 }
                 return;
             },
             ?[]const u8 => {
-                out.print("pub const {}: ?[]const u8 = ", .{std.zig.fmtId(name)}) catch unreachable;
+                out.print("pub const {f}: ?[]const u8 = ", .{std.zig.fmtId(name)}) catch unreachable;
                 if (value) |payload| {
-                    out.print("\"{}\";\n", .{std.zig.fmtEscapes(payload)}) catch unreachable;
+                    out.print("\"{f}\";\n", .{fmtEscapes(payload)}) catch unreachable;
                 } else {
                     out.writeAll("null;\n") catch unreachable;
                 }
@@ -1215,7 +1203,7 @@ const BuildOptionStep = struct {
             },
             std.SemanticVersion => {
                 out.print(
-                    \\pub const {}: @import("std").SemanticVersion = .{{
+                    \\pub const {f}: @import("std").SemanticVersion = .{{
                     \\    .major = {d},
                     \\    .minor = {d},
                     \\    .patch = {d},
@@ -1228,10 +1216,10 @@ const BuildOptionStep = struct {
                     value.patch,
                 }) catch unreachable;
                 if (value.pre) |some| {
-                    out.print("    .pre = \"{}\",\n", .{std.zig.fmtEscapes(some)}) catch unreachable;
+                    out.print("    .pre = \"{f}\",\n", .{fmtEscapes(some)}) catch unreachable;
                 }
                 if (value.build) |some| {
-                    out.print("    .build = \"{}\",\n", .{std.zig.fmtEscapes(some)}) catch unreachable;
+                    out.print("    .build = \"{f}\",\n", .{fmtEscapes(some)}) catch unreachable;
                 }
                 out.writeAll("};\n") catch unreachable;
                 return;
@@ -1240,23 +1228,24 @@ const BuildOptionStep = struct {
         }
         switch (@typeInfo(T)) {
             .Enum => |enum_info| {
-                out.print("pub const {} = enum {{\n", .{std.zig.fmtId(@typeName(T))}) catch unreachable;
+                out.print("pub const {f} = enum {{\n", .{std.zig.fmtId(@typeName(T))}) catch unreachable;
                 inline for (enum_info.fields) |field| {
-                    out.print("    {},\n", .{std.zig.fmtId(field.name)}) catch unreachable;
+                    out.print("    {f},\n", .{std.zig.fmtId(field.name)}) catch unreachable;
                 }
                 out.writeAll("};\n") catch unreachable;
             },
             else => {},
         }
-        out.print("pub const {}: {s} = {};\n", .{ std.zig.fmtId(name), @typeName(T), value }) catch unreachable;
+        out.print("pub const {f}: {s} = {};\n", .{ std.zig.fmtId(name), @typeName(T), value }) catch unreachable;
     }
 
     fn make(step: *Step, progress: std.Progress.Node) !void {
         _ = progress;
         const self: *Self = @fieldParentPtr("step", step);
 
+        const io = self.builder.graph.io;
         var cacher = createCacheBuilder(self.builder);
-        cacher.addBytes(self.file_content.items);
+        cacher.addBytes(self.file_content.written());
 
         const root_path = try cacher.createAndGetPath();
 
@@ -1265,9 +1254,9 @@ const BuildOptionStep = struct {
             "build_options.zig",
         });
 
-        try std.fs.cwd().writeFile(.{
+        try std.Io.Dir.cwd().writeFile(io, .{
             .sub_path = self.package_file.path.?,
-            .data = self.file_content.items,
+            .data = self.file_content.written(),
         });
     }
 };
@@ -1300,8 +1289,9 @@ const CacheBuilder = struct {
 
     pub fn addFile(self: *Self, file: std.Build.LazyPath) !void {
         const path = file.getPath(self.builder);
+        const io = self.builder.graph.io;
 
-        const data = try std.fs.cwd().readFileAlloc(self.builder.allocator, path, 1 << 32); // 4 GB
+        const data = try std.Io.Dir.cwd().readFileAlloc(io, path, self.builder.allocator, .unlimited);
         defer self.builder.allocator.free(data);
 
         self.addBytes(data);
@@ -1314,20 +1304,20 @@ const CacheBuilder = struct {
         const path = if (self.subdir) |subdir|
             try std.fmt.allocPrint(
                 self.builder.allocator,
-                "{s}/{s}/o/{}",
+                "{s}/{s}/o/{x}",
                 .{
                     self.builder.cache_root.path.?,
                     subdir,
-                    std.fmt.fmtSliceHexLower(&hash),
+                    &hash,
                 },
             )
         else
             try std.fmt.allocPrint(
                 self.builder.allocator,
-                "{s}/o/{}",
+                "{s}/o/{x}",
                 .{
                     self.builder.cache_root.path.?,
-                    std.fmt.fmtSliceHexLower(&hash),
+                    &hash,
                 },
             );
 
@@ -1335,20 +1325,22 @@ const CacheBuilder = struct {
     }
 
     pub const DirAndPath = struct {
-        dir: std.fs.Dir,
+        dir: std.Io.Dir,
         path: []const u8,
     };
     pub fn createAndGetDir(self: *Self) !DirAndPath {
+        const io = self.builder.graph.io;
         const path = try self.createPath();
         return DirAndPath{
             .path = path,
-            .dir = try std.fs.cwd().makeOpenPath(path, .{}),
+            .dir = try std.Io.Dir.cwd().createDirPathOpen(io, path, .{}),
         };
     }
 
     pub fn createAndGetPath(self: *Self) ![]const u8 {
+        const io = self.builder.graph.io;
         const path = try self.createPath();
-        try std.fs.cwd().makePath(path);
+        try std.Io.Dir.cwd().createDirPath(io, path);
         return path;
     }
 };

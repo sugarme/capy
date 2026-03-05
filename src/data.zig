@@ -5,6 +5,62 @@ const global_allocator = internal.allocator;
 const trait = @import("trait.zig");
 const AnimationController = @import("AnimationController.zig");
 
+/// Returns a global Io handle for use in mutex/rwlock/clock operations.
+fn getIo() std.Io {
+    return std.Options.debug_io;
+}
+
+/// Compat wrapper: Mutex was moved to std.Io.Mutex in Zig 0.16.
+/// This wrapper provides the old lock()/unlock() API without requiring an Io parameter.
+const Mutex = struct {
+    inner: std.Io.Mutex = std.Io.Mutex.init,
+
+    pub fn lock(self: *Mutex) void {
+        self.inner.lockUncancelable(getIo());
+    }
+
+    pub fn unlock(self: *Mutex) void {
+        self.inner.unlock(getIo());
+    }
+};
+
+/// Compat wrapper: RwLock was moved to std.Io.RwLock in Zig 0.16.
+const RwLock = struct {
+    inner: std.Io.RwLock = std.Io.RwLock.init,
+
+    pub fn lock(self: *RwLock) void {
+        self.inner.lockUncancelable(getIo());
+    }
+
+    pub fn unlock(self: *RwLock) void {
+        self.inner.unlock(getIo());
+    }
+
+    pub fn lockShared(self: *RwLock) void {
+        self.inner.lockSharedUncancelable(getIo());
+    }
+
+    pub fn unlockShared(self: *RwLock) void {
+        self.inner.unlockShared(getIo());
+    }
+};
+
+/// Compat wrapper: Instant was removed in Zig 0.16.
+/// Uses std.Io.Timestamp with the awake (monotonic) clock.
+const Instant = struct {
+    timestamp: std.Io.Timestamp,
+
+    pub fn now() error{Unsupported}!Instant {
+        return Instant{ .timestamp = std.Io.Timestamp.now(getIo(), .awake) };
+    }
+
+    /// Returns the number of nanoseconds elapsed since `earlier`.
+    pub fn since(self: Instant, earlier: Instant) u64 {
+        const diff = earlier.timestamp.durationTo(self.timestamp);
+        return @intCast(@max(0, diff.nanoseconds));
+    }
+};
+
 /// Compat wrapper: std.SinglyLinkedList in 0.15.2 became intrusive (no data payload).
 /// This recreates the old generic SinglyLinkedList(T) API with a Node that has a .data field.
 fn SinglyLinkedList(comptime T: type) type {
@@ -136,7 +192,7 @@ pub const Easings = struct {
 
 fn Animation(comptime T: type) type {
     return struct {
-        start: std.time.Instant,
+        start: Instant,
         /// Assume animation won't last more than 4000000 seconds
         duration: u32,
         min: T,
@@ -145,7 +201,7 @@ fn Animation(comptime T: type) type {
 
         /// Get the current value from the animation
         pub fn get(self: @This()) T {
-            const now = std.time.Instant.now() catch @panic("a monotonic clock is required for animations");
+            const now = Instant.now() catch @panic("a monotonic clock is required for animations");
             const maxDiff = @as(f64, @floatFromInt(self.duration)) * @as(f64, std.time.ns_per_ms);
             const diff: f64 = @floatFromInt(now.since(self.start));
             var t = diff / maxDiff;
@@ -218,7 +274,7 @@ pub fn Atom(comptime T: type) type {
     return struct {
         value: if (isAnimatable) union(enum) { Single: T, Animated: Animation(T) } else T,
         // TODO: switch to a lock that allow concurrent reads but one concurrent write
-        lock: std.Thread.Mutex = .{},
+        lock: Mutex = .{},
         /// List of every change listener listening to this atom.
         /// A linked list is used for minimal stack overhead and to take
         /// advantage of the fact that most Atoms don't have a
@@ -391,7 +447,7 @@ pub fn Atom(comptime T: type) type {
             if (!isAnimatable) return false;
             switch (self.value) {
                 .Animated => |animation| {
-                    const now = std.time.Instant.now() catch @panic("a monotonic clock is required for animations");
+                    const now = Instant.now() catch @panic("a monotonic clock is required for animations");
                     if (now.since(animation.start) >= @as(u64, animation.duration) * std.time.ns_per_ms) {
                         self.value = .{ .Single = animation.max };
                         self.callHandlers();
@@ -411,7 +467,7 @@ pub fn Atom(comptime T: type) type {
             if (!isAnimatable) return false;
             switch (self.value) {
                 .Animated => |animation| {
-                    const now = std.time.Instant.now() catch return false;
+                    const now = Instant.now() catch return false;
                     return now.since(animation.start) < @as(u64, animation.duration) * std.time.ns_per_ms;
                 },
                 .Single => return false,
@@ -426,7 +482,7 @@ pub fn Atom(comptime T: type) type {
             }
             const currentValue = self.get();
             self.value = .{ .Animated = Animation(T){
-                .start = std.time.Instant.now() catch @panic("a monotonic clock is required for animations"),
+                .start = Instant.now() catch @panic("a monotonic clock is required for animations"),
                 .duration = @as(u32, @intCast(duration)),
                 .min = currentValue,
                 .max = target,
@@ -813,7 +869,7 @@ pub fn ListAtom(comptime T: type) type {
         backing_list: ListType,
         length: Atom(usize),
         // TODO: since RwLock doesn't report deadlocks in Debug mode like Mutex does, do it manually here in ListAtom
-        lock: std.Thread.RwLock = .{},
+        lock: RwLock = .{},
         /// List of every change listener listening to this atom.
         onChange: ChangeListenerList = .{},
         allocator: std.mem.Allocator,
@@ -835,7 +891,7 @@ pub fn ListAtom(comptime T: type) type {
         // - an item in the list got replaced by another
 
         pub const Iterator = struct {
-            lock: *std.Thread.RwLock,
+            lock: *RwLock,
             items: []const T,
             index: usize = 0,
 

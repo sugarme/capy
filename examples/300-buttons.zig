@@ -4,7 +4,7 @@ const capy = @import("capy");
 
 pub fn main() !void {
     try capy.init();
-    const start = std.time.milliTimestamp();
+    const start = std.Io.Timestamp.now(capy.internal.io, .real).toMilliseconds();
 
     var window = try capy.Window.init();
 
@@ -31,7 +31,7 @@ pub fn main() !void {
     window.setPreferredSize(800, 600);
     window.show();
 
-    const end = std.time.milliTimestamp();
+    const end = std.Io.Timestamp.now(capy.internal.io, .real).toMilliseconds();
     std.log.info("Took {d}ms for creating {d} buttons", .{ end - start, NUM_BUTTONS });
 
     capy.runEventLoop();
