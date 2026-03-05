@@ -193,4 +193,5 @@ pub fn deinit(self: *Monitor) void {
     }
     lib.internal.allocator.free(self.adapter_win32_name);
     lib.internal.allocator.free(self.win32_name);
+    lib.internal.allocator.free(self.device_name);
 }

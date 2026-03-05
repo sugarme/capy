@@ -682,6 +682,16 @@ pub fn measureWindowText(peer: HWND) struct { width: i32, height: i32 } {
     return .{ .width = size.cx, .height = size.cy };
 }
 
+fn freeEventUserData(hwnd: HWND, _: LPARAM) callconv(.winapi) win32.BOOL {
+    const user_data = win32Backend.getWindowLongPtr(hwnd, win32.GWL_USERDATA);
+    if (user_data != 0) {
+        const data: *EventUserData = @ptrFromInt(@as(usize, @intCast(user_data)));
+        lib.internal.allocator.destroy(data);
+        _ = win32Backend.setWindowLongPtr(hwnd, win32.GWL_USERDATA, 0);
+    }
+    return 1; // continue enumeration
+}
+
 pub fn Events(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -969,7 +979,15 @@ pub fn Events(comptime T: type) type {
                         T.onGotFocus(hwnd);
                     }
                 },
-                win32.WM_DESTROY => win32.PostQuitMessage(0),
+                win32.WM_DESTROY => {
+                    // Free EventUserData for all child windows (including standard
+                    // controls like Label/Slider that don't use our wndproc).
+                    _ = win32.EnumChildWindows(hwnd, &freeEventUserData, 0);
+                    if (T == Window) win32.PostQuitMessage(0);
+                },
+                win32.WM_NCDESTROY => {
+                    _ = freeEventUserData(hwnd, 0);
+                },
                 else => {},
             }
             return win32.DefWindowProcW(hwnd, wm, wp, lp);

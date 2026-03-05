@@ -135,6 +135,8 @@
 - Replaced body with `@compileError` since it used old Zig 0.13 API
 - File: vendor/zigwin32/zig.zig
 
+## 2026-03-05 - Runtime Fixes (slide-viewer, D2D, memory leaks)
+
 ### std.fs.File in vendored zigimg → std.Io.File
 - `std.fs.File` → `std.Io.File`, `std.fs.File.Reader` → `std.Io.File.Reader`, `std.fs.File.Writer` → `std.Io.File.Writer`
 - `std.fs.File.SeekError` → `std.Io.File.SeekError`, `std.fs.File.Reader.SeekError` → `std.Io.File.Reader.SeekError`
@@ -171,7 +173,24 @@
 - File: src/backends/win32/backend.zig (WM_PAINT handler, DrawContextImpl methods:
   fill, stroke, line, clear, text)
 
+### Memory leak fixes
+- **EventUserData leak** (src/backends/win32/backend.zig): EventUserData allocated per
+  widget in `setupEvents` was never freed. Added `freeEventUserData` callback + WM_DESTROY
+  handler that enumerates all child windows via `EnumChildWindows` and frees their
+  EventUserData (covers standard Win32 controls like Label/Slider that don't use our
+  wndproc). WM_NCDESTROY frees the current HWND's own EventUserData (for custom window
+  classes). Also fixed WM_DESTROY to only call `PostQuitMessage` for the main Window type.
+- **Monitor device_name leak** (src/backends/win32/Monitor.zig): `deinit()` freed
+  `adapter_win32_name`, `win32_name`, and `internal_name` but not `device_name`. Added
+  `free(self.device_name)`.
+- **audio.zig mutex bug**: `deinit()` locked mutex but never unlocked — added
+  `defer generatorsMutex.unlock(internal.io)`. `AudioGenerator.deinit()` did lock/unlock
+  without protecting the `swapRemove` — moved critical section inside mutex scope.
+- **media-player.zig**: Added `defer generator.deinit()` and `defer pitch.deinit()` to
+  free AudioGenerator and Atom binding nodes on exit.
+
 ### Result
 - **All 55 build steps compile successfully with zero errors**
 - All D2D-using examples (slide-viewer, media-player, colors, graph, etc.) run without segfault
+- media-player runs with zero memory leaks
 - Zig version: 0.16.0-dev.2676+4e2cec265

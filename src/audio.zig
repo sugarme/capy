@@ -58,11 +58,12 @@ pub const AudioGenerator = struct {
 
     pub fn deinit(self: *AudioGenerator) void {
         self.stop();
-        generatorsMutex.lockUncancelable(internal.io);
-        generatorsMutex.unlock(internal.io);
-
-        if (std.mem.indexOfScalar(*AudioGenerator, generators.items, self)) |index| {
-            _ = generators.swapRemove(index);
+        {
+            generatorsMutex.lockUncancelable(internal.io);
+            defer generatorsMutex.unlock(internal.io);
+            if (std.mem.indexOfScalar(*AudioGenerator, generators.items, self)) |index| {
+                _ = generators.swapRemove(index);
+            }
         }
         self.peer.deinit();
         internal.allocator.destroy(self);
@@ -91,5 +92,6 @@ pub fn backendUpdate() void {
 
 pub fn deinit() void {
     generatorsMutex.lockUncancelable(internal.io);
+    defer generatorsMutex.unlock(internal.io);
     generators.deinit(internal.allocator);
 }

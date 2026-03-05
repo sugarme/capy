@@ -30,6 +30,7 @@ pub fn main() !void {
 
     try capy.init();
     defer capy.deinit();
+    defer pitch.deinit();
 
     var window = try capy.Window.init();
     defer window.deinit();
@@ -46,6 +47,7 @@ pub fn main() !void {
     window.show();
 
     var generator = try capy.audio.AudioGenerator.init(sine, 2);
+    defer generator.deinit();
     try generator.register();
 
     generator.play();
